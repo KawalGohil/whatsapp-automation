@@ -220,34 +220,18 @@
                     body: JSON.stringify({ username, password })
                 });
 
-                const data = await response.json();
+                const data = await response.json().catch(() => ({}));
                 if (response.ok) {
-                    // Set up WebSocket connection before showing the app
-                    socket.auth = { username };
-                    socket.connect();
-                    
-                    // Wait a moment for WebSocket connection to establish
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    
-                    if (socket.connected) {
-                        showApp(username);
-                    } else {
-                        throw new Error('Failed to establish WebSocket connection');
-                    }
+                    // Only show the app after registration is confirmed
+                    showApp(username);
                 } else {
-                    registerStatus.textContent = data.error || 'Registration failed';
+                    registerStatus.textContent = data.error || data.message || 'Registration failed';
                     registerStatus.className = 'auth-status error';
                 }
             } catch (error) {
                 console.error('Registration error:', error);
                 registerStatus.textContent = 'Error connecting to server: ' + error.message;
                 registerStatus.className = 'auth-status error';
-                
-                // Try to reconnect if WebSocket connection failed
-                if (!socket.connected) {
-                    console.log('Attempting to reconnect WebSocket...');
-                    socket.connect();
-                }
             }
         });
 

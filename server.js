@@ -229,7 +229,21 @@ async function initializeClient(clientId, socket) {
         await client.initialize().catch(err => {
             const errorMsg = 'Failed to initialize WhatsApp client. Please try again.';
             logger.error(`Failed to initialize client for ${clientId}:`, err);
-            socket.emit('status', errorMsg);
+            // --- New logic: If Puppeteer/Chromium launch error, clean up session dir ---
+            if (err && (String(err).includes('Failed to launch the browser process') || String(err).includes('ProcessSingleton'))) {
+                const sessionDir = path.join(config.paths.session, clientId);
+                try {
+                    if (fs.existsSync(sessionDir)) {
+                        fs.rmSync(sessionDir, { recursive: true, force: true });
+                        logger.info(`Deleted session directory for ${clientId} due to Puppeteer launch error.`);
+                    }
+                } catch (cleanupErr) {
+                    logger.error(`Error cleaning up session directory for ${clientId}:`, cleanupErr);
+                }
+                socket.emit('status', 'A session error occurred. Please try logging in again. (Session was reset)');
+            } else {
+                socket.emit('status', errorMsg);
+            }
             delete initializingSessions[clientId];
         });
     } catch (err) {
