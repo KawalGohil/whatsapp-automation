@@ -174,15 +174,23 @@
                     body: JSON.stringify({ username, password })
                 });
 
-                const data = await response.json();
+                const data = await response.json().catch(() => ({}));
                 if (response.ok) {
-                    // Set up WebSocket connection before showing the app
+                    // Poll /check-auth until it returns success (max 5 tries)
+                    let authenticated = false;
+                    for (let i = 0; i < 5; i++) {
+                        const check = await fetch('/check-auth', { credentials: 'include' });
+                        if (check.ok) {
+                            authenticated = true;
+                            break;
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 300));
+                    }
+                    if (!authenticated) throw new Error('Session not established after login');
                     socket.auth = { username };
                     socket.connect();
-                    
                     // Wait a moment for WebSocket connection to establish
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    
+                    await new Promise(resolve => setTimeout(resolve, 300));
                     if (socket.connected) {
                         showApp(username);
                     } else {
@@ -196,12 +204,6 @@
                 console.error('Login error:', error);
                 loginStatus.textContent = 'Error connecting to server: ' + error.message;
                 loginStatus.className = 'auth-status error';
-                
-                // Try to reconnect if WebSocket connection failed
-                if (!socket.connected) {
-                    console.log('Attempting to reconnect WebSocket...');
-                    socket.connect();
-                }
             }
         });
 
