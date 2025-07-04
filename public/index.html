@@ -64,8 +64,30 @@
     </div>
 
     <script>
-        const socket = io({ autoConnect: false });
+        // Initialize Socket.IO client with explicit configuration
+        const socket = io({
+            autoConnect: false,
+            withCredentials: true,
+            // Use WebSocket transport first, fall back to polling if needed
+            transports: ['websocket', 'polling'],
+            // Important for Railway deployment
+            path: '/socket.io/'
+        });
+        
         let currentUsername = null;
+        
+        // Debug logging for WebSocket connection
+        socket.on('connect', () => {
+            console.log('Connected to WebSocket server');
+        });
+        
+        socket.on('disconnect', (reason) => {
+            console.log('Disconnected:', reason);
+        });
+        
+        socket.on('connect_error', (error) => {
+            console.error('Connection error:', error);
+        });
 
         // --- DOM Elements ---
         const authContainer = document.getElementById('auth-container');
@@ -122,17 +144,45 @@
             e.preventDefault();
             const username = document.getElementById('login-username').value;
             const password = document.getElementById('login-password').value;
-            const response = await fetch('/login', { 
-                method: 'POST', 
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password })
-            });
-            if (response.ok) {
-                showApp(username);
-                loginForm.reset(); // Clear fields on successful login
-            } else {
-                loginStatus.textContent = await response.text();
+
+            try {
+                const response = await fetch('/login', {
+                    method: 'POST',
+                    credentials: 'include', // Important for cookies
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    // Set up WebSocket connection before showing the app
+                    socket.auth = { username };
+                    socket.connect();
+                    
+                    // Wait a moment for WebSocket connection to establish
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    if (socket.connected) {
+                        showApp(username);
+                    } else {
+                        throw new Error('Failed to establish WebSocket connection');
+                    }
+                } else {
+                    loginStatus.textContent = data.error || 'Login failed';
+                    loginStatus.className = 'auth-status error';
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                loginStatus.textContent = 'Error connecting to server: ' + error.message;
                 loginStatus.className = 'auth-status error';
+                
+                // Try to reconnect if WebSocket connection failed
+                if (!socket.connected) {
+                    console.log('Attempting to reconnect WebSocket...');
+                    socket.connect();
+                }
             }
         });
 
@@ -140,17 +190,45 @@
             e.preventDefault();
             const username = document.getElementById('register-username').value;
             const password = document.getElementById('register-password').value;
-            const response = await fetch('/register', { 
-                method: 'POST', 
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password })
-            });
-            if (response.ok) {
-                showApp(username);
-                registerForm.reset(); // Clear fields on successful registration
-            } else {
-                registerStatus.textContent = await response.text();
+
+            try {
+                const response = await fetch('/register', {
+                    method: 'POST',
+                    credentials: 'include', // Important for cookies
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    // Set up WebSocket connection before showing the app
+                    socket.auth = { username };
+                    socket.connect();
+                    
+                    // Wait a moment for WebSocket connection to establish
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    if (socket.connected) {
+                        showApp(username);
+                    } else {
+                        throw new Error('Failed to establish WebSocket connection');
+                    }
+                } else {
+                    registerStatus.textContent = data.error || 'Registration failed';
+                    registerStatus.className = 'auth-status error';
+                }
+            } catch (error) {
+                console.error('Registration error:', error);
+                registerStatus.textContent = 'Error connecting to server: ' + error.message;
                 registerStatus.className = 'auth-status error';
+                
+                // Try to reconnect if WebSocket connection failed
+                if (!socket.connected) {
+                    console.log('Attempting to reconnect WebSocket...');
+                    socket.connect();
+                }
             }
         });
 

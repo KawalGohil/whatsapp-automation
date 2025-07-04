@@ -15,7 +15,17 @@ const { addUser, findUser } = require('./database');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+
+// Configure Socket.IO with CORS and other options
+const io = new Server(server, {
+    cors: {
+        origin: '*', // In production, replace with your frontend URL
+        methods: ['GET', 'POST'],
+        credentials: true
+    },
+    // Enable WebSocket transport
+    transports: ['websocket', 'polling']
+});
 
 // --- Middleware ---
 app.use(express.static(path.join(__dirname, 'public')));
@@ -199,12 +209,34 @@ async function initializeClient(clientId, socket) {
 
 // --- Socket.IO Connection ---
 io.use((socket, next) => {
-    if (socket.request.session.user) {
-        socket.user = socket.request.session.user;
-        next();
-    } else {
-        next(new Error('unauthorized'));
+    // Allow connection for authentication
+    if (socket.handshake.auth && socket.handshake.auth.username) {
+        socket.user = { username: socket.handshake.auth.username };
+        return next();
     }
+    
+    // Also allow if user is in session (for page refreshes)
+    if (socket.request.session && socket.request.session.user) {
+        socket.user = socket.request.session.user;
+        return next();
+    }
+    
+    next(new Error('Unauthorized'));
+});
+
+// Handle new connections
+io.on('connection', (socket) => {
+    console.log(`User connected: ${socket.user?.username || 'Unknown'}`);
+    
+    // Handle disconnection
+    socket.on('disconnect', () => {
+        console.log(`User disconnected: ${socket.user?.username || 'Unknown'}`);
+    });
+    
+    // Handle errors
+    socket.on('error', (error) => {
+        console.error('Socket error:', error);
+    });
 });
 
 io.on('connection', (socket) => {
