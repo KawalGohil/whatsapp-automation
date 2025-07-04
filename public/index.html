@@ -239,28 +239,32 @@
 
         logoutButton.addEventListener('click', async () => {
             try {
-                // Notify server to clean up
                 const response = await fetch('/logout', { 
                     method: 'POST',
-                    credentials: 'include' // Important for session cookies
+                    credentials: 'include'
                 });
-                
-                const data = await response.json().catch(() => ({}));
                 if (response.ok) {
                     // Disconnect socket and clean up
                     socket.disconnect();
                     socket.off(); // Remove all event listeners
+
+                    // Wait for socket to fully disconnect before showing login
+                    await new Promise(resolve => {
+                        if (!socket.connected) return resolve();
+                        socket.once('disconnect', resolve);
+                    });
+
                     // Reset UI
                     showLogin();
+
                     // Force a small delay before allowing re-login
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await new Promise(resolve => setTimeout(resolve, 500));
                 } else {
-                    // Show error in statusDiv instead of alert
+                    const data = await response.json().catch(() => ({}));
                     statusDiv.textContent = data.error || 'Logout failed.';
                     statusDiv.className = 'status error';
                 }
             } catch (error) {
-                console.error('Error during logout:', error);
                 statusDiv.textContent = 'Error during logout: ' + error.message;
                 statusDiv.className = 'status error';
             }
