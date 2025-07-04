@@ -5,6 +5,7 @@
 # These files are generated locally and should not be committed.
 # On the server, they will be stored in the persistent disk.
 .wwebjs_auth/
+.wwebjs_cache/
 whatsapp_automation.db
 sessions.db
 
