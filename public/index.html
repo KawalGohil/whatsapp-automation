@@ -187,11 +187,27 @@
                         await new Promise(resolve => setTimeout(resolve, 300));
                     }
                     if (!authenticated) throw new Error('Session not established after login');
+
+                    // Wait a bit more to ensure cookie propagation
+                    await new Promise(resolve => setTimeout(resolve, 500));
+
                     socket.auth = { username };
                     socket.connect();
-                    // Wait a moment for WebSocket connection to establish
-                    await new Promise(resolve => setTimeout(resolve, 300));
-                    if (socket.connected) {
+
+                    // Wait for connection or retry once if it fails
+                    let connected = false;
+                    for (let i = 0; i < 2; i++) {
+                        await new Promise(resolve => setTimeout(resolve, 400));
+                        if (socket.connected) {
+                            connected = true;
+                            break;
+                        }
+                        if (!connected && i === 0) {
+                            // Retry once
+                            socket.connect();
+                        }
+                    }
+                    if (connected) {
                         showApp(username);
                     } else {
                         throw new Error('Failed to establish WebSocket connection');
