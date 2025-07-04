@@ -1,0 +1,13 @@
+# Ignore local dependencies
+node_modules
+
+# Ignore local session and database files
+.wwebjs_auth
+whatsapp_automation.db
+sessions.db
+
+# Ignore logs and git files
+npm-debug.log
+.git
+.gitignore
+.idea

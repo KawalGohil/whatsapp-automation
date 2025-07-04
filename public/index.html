@@ -1,0 +1,211 @@
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Group Creator</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 40px; background-color: #f0f2f5; color: #1c1e21; }
+        .container { max-width: 600px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1, h2 { text-align: center; color: #1877f2; }
+        .hidden { display: none !important; }
+        #qrcode { width: 256px; height: 256px; margin: 20px auto; border: 1px solid #ddd; padding: 10px; }
+        #status, .auth-status { margin-top: 20px; text-align: center; font-weight: bold; color: #333; }
+        .auth-status.error { color: #d93025; }
+        form { display: flex; flex-direction: column; gap: 15px; }
+        input[type="text"], input[type="password"], input[type="file"] { padding: 10px; border-radius: 6px; border: 1px solid #ddd; font-size: 16px; }
+        button { padding: 12px; border-radius: 6px; border: none; background-color: #1877f2; color: white; font-size: 16px; font-weight: bold; cursor: pointer; }
+        button:hover { background-color: #166fe5; }
+        .auth-toggle { text-align: center; margin-top: 15px; color: #1877f2; cursor: pointer; }
+        #logout-button { background-color: #d93025; position: absolute; top: 20px; right: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WhatsApp Group Creator</h1>
+
+        <div id="auth-container">
+            <div id="login-view">
+                <h2>Login</h2>
+                <form id="login-form">
+                    <input type="text" id="login-username" placeholder="Username" required>
+                    <input type="password" id="login-password" placeholder="Password" required>
+                    <button type="submit">Login</button>
+                </form>
+                <div id="login-status" class="auth-status"></div>
+                <p class="auth-toggle" onclick="toggleAuthView()">Don't have an account? Register</p>
+            </div>
+
+            <div id="register-view" class="hidden">
+                <h2>Register</h2>
+                <form id="register-form">
+                    <input type="text" id="register-username" placeholder="Username" required>
+                    <input type="password" id="register-password" placeholder="Password" required>
+                    <button type="submit">Register</button>
+                </form>
+                <div id="register-status" class="auth-status"></div>
+                <p class="auth-toggle" onclick="toggleAuthView()">Already have an account? Login</p>
+            </div>
+        </div>
+
+        <div id="app-container" class="hidden">
+            <button id="logout-button">Logout</button>
+            <div id="qrcode"></div>
+            <div id="status">Connecting to WhatsApp...</div>
+            <hr>
+            <h2>Create New Group</h2>
+            <form id="group-form">
+                <input type="text" id="groupName" placeholder="Enter Group Name" required>
+                <input type="file" id="contacts" accept=".csv" required>
+                <button type="submit">Create Group</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const socket = io({ autoConnect: false });
+        let currentUsername = null;
+
+        // --- DOM Elements ---
+        const authContainer = document.getElementById('auth-container');
+        const appContainer = document.getElementById('app-container');
+        const loginView = document.getElementById('login-view');
+        const registerView = document.getElementById('register-view');
+        const loginForm = document.getElementById('login-form');
+        const registerForm = document.getElementById('register-form');
+        const loginStatus = document.getElementById('login-status');
+        const registerStatus = document.getElementById('register-status');
+        const qrcodeDiv = document.getElementById('qrcode');
+        const statusDiv = document.getElementById('status');
+        const groupForm = document.getElementById('group-form');
+        const logoutButton = document.getElementById('logout-button');
+
+        // --- UI Logic ---
+        function toggleAuthView() {
+            loginView.classList.toggle('hidden');
+            registerView.classList.toggle('hidden');
+        }
+
+        function showApp(username) {
+            currentUsername = username;
+            authContainer.classList.add('hidden');
+            appContainer.classList.remove('hidden');
+
+            // Reset UI state for the new session
+            qrcodeDiv.innerHTML = '';
+            statusDiv.textContent = 'Initializing session... Please wait.';
+
+            socket.auth = { username };
+            socket.connect();
+        }
+
+        function showLogin() {
+            currentUsername = null;
+            authContainer.classList.remove('hidden');
+            appContainer.classList.add('hidden');
+            socket.disconnect();
+
+            // Clear form fields for privacy and usability
+            loginForm.reset();
+            registerForm.reset();
+            loginStatus.textContent = '';
+            registerStatus.textContent = '';
+
+            // Reset app state as well to prevent flash of old content
+            qrcodeDiv.innerHTML = '';
+            statusDiv.textContent = 'Connecting to WhatsApp...';
+        }
+
+        // --- Event Listeners ---
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('login-username').value;
+            const password = document.getElementById('login-password').value;
+            const response = await fetch('/login', { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            if (response.ok) {
+                showApp(username);
+                loginForm.reset(); // Clear fields on successful login
+            } else {
+                loginStatus.textContent = await response.text();
+                loginStatus.className = 'auth-status error';
+            }
+        });
+
+        registerForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('register-username').value;
+            const password = document.getElementById('register-password').value;
+            const response = await fetch('/register', { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            if (response.ok) {
+                showApp(username);
+                registerForm.reset(); // Clear fields on successful registration
+            } else {
+                registerStatus.textContent = await response.text();
+                registerStatus.className = 'auth-status error';
+            }
+        });
+
+        logoutButton.addEventListener('click', async () => {
+            await fetch('/logout', { method: 'POST' });
+            showLogin();
+        });
+
+        groupForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('groupName', groupForm.querySelector('#groupName').value);
+            formData.append('contacts', groupForm.querySelector('#contacts').files[0]);
+            formData.append('clientId', currentUsername); // Use username as the session identifier
+
+            statusDiv.textContent = 'Uploading contacts and creating group...';
+            const response = await fetch('/upload', { method: 'POST', body: formData });
+            statusDiv.textContent = await response.text();
+        });
+
+        // --- Socket.IO Handlers ---
+        socket.on('qr', (qr) => {
+            statusDiv.textContent = 'Scan this QR code with your WhatsApp.';
+            QRCode.toCanvas(document.createElement('canvas'), qr, { width: 256 }, (err, canvas) => {
+                if (err) return console.error(err);
+                qrcodeDiv.innerHTML = '';
+                qrcodeDiv.appendChild(canvas);
+            });
+        });
+
+        socket.on('status', (message) => {
+            statusDiv.textContent = message;
+            if (message.includes('Client is ready')) {
+                qrcodeDiv.innerHTML = `
+                    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%;">
+                        <svg width="80" height="80" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-bottom: 16px;">
+                            <circle cx="12" cy="12" r="10" fill="#4CAF50"></circle>
+                            <path d="M8 12.3l2.7 2.7L16 9" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                        </svg>
+                        <p style="font-size: 1.2em; color: #333; font-weight: bold; margin: 0;">Client Ready</p>
+                        <p style="font-size: 0.9em; color: #666; margin: 4px 0 0 0;">You can now create groups.</p>
+                    </div>`;
+            }
+        });
+
+        // Check login status on page load
+        (async function() {
+            const response = await fetch('/check-auth');
+            if (response.ok) {
+                const { user } = await response.json();
+                showApp(user.username);
+            } else {
+                showLogin();
+            }
+        })();
+    </script>
+</body>
+</html>

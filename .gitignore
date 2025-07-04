@@ -1,0 +1,45 @@
+# Dependencies
+/node_modules
+
+# Local Data and Sessions
+# These files are generated locally and should not be committed.
+# On the server, they will be stored in the persistent disk.
+.wwebjs_auth/
+whatsapp_automation.db
+sessions.db
+
+# Uploads
+# The uploads directory is for temporary file storage.
+/uploads
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDEs and editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Sensitive user data
+contacts.csv
+
+# Application state file
+state.json
