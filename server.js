@@ -157,6 +157,7 @@ const isAuthenticated = (req, res, next) => {
 // --- Multi-Client Management ---
 const clients = {}; // Stores active client instances
 const initializingSessions = {}; // Tracks sessions that are currently starting up
+const latestQRCodes = {}; // Stores the latest QR code for each client
 
 async function initializeClient(clientId, socket, isRetry = false) {
     logger.info(`Initialization request for session: ${clientId}${isRetry ? ' (retry)' : ''}`);
@@ -176,7 +177,13 @@ async function initializeClient(clientId, socket, isRetry = false) {
     // If another request is already initializing this session, tell the user to wait.
     if (initializingSessions[clientId]) {
         logger.info(`Session for ${clientId} is already initializing. Notifying client to wait.`);
-        socket.emit('status', 'Please wait while we prepare your session...');
+        // If we have a QR code, send it to the new socket
+        if (latestQRCodes[clientId]) {
+            logger.info(`Re-sending latest QR code for ${clientId} to new socket connection.`);
+            socket.emit('qr', latestQRCodes[clientId]);
+        } else {
+            socket.emit('status', 'Please wait while we prepare your session...');
+        }
         return;
     }
 
@@ -202,12 +209,14 @@ async function initializeClient(clientId, socket, isRetry = false) {
 
         client.on('qr', (qr) => {
             logger.info(`QR code generated for ${clientId}. Sending to client.`);
+            latestQRCodes[clientId] = qr; // Store the latest QR
             socket.emit('qr', qr);
         });
 
         client.on('ready', () => {
             logger.info(`WhatsApp Client for ${clientId} is ready!`);
             clients[clientId] = client;
+            delete latestQRCodes[clientId]; // Clear QR on ready
             socket.emit('status', 'Client is ready!');
             delete initializingSessions[clientId];
         });
@@ -217,6 +226,7 @@ async function initializeClient(clientId, socket, isRetry = false) {
             logger.error(`Authentication failure for ${clientId}: ${msg}`);
             socket.emit('status', errorMsg);
             delete initializingSessions[clientId];
+            delete latestQRCodes[clientId];
         });
 
         client.on('disconnected', (reason) => {
@@ -224,6 +234,7 @@ async function initializeClient(clientId, socket, isRetry = false) {
             socket.emit('status', 'Client disconnected. Please refresh and log in again.');
             if (clients[clientId]) delete clients[clientId];
             if (initializingSessions[clientId]) delete initializingSessions[clientId];
+            delete latestQRCodes[clientId];
         });
 
         await client.initialize().catch(async err => {
@@ -249,11 +260,13 @@ async function initializeClient(clientId, socket, isRetry = false) {
             logger.error(`Failed to initialize client for ${clientId}:`, err);
             socket.emit('status', userFriendlyMsg);
             delete initializingSessions[clientId];
+            delete latestQRCodes[clientId];
         });
     } catch (err) {
         logger.error(`Failed to initialize client for ${clientId}:`, err);
         socket.emit('status', 'Could not start WhatsApp session. Please try again in a few seconds.');
         delete initializingSessions[clientId];
+        delete latestQRCodes[clientId];
     }
 }
 
