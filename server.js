@@ -102,12 +102,14 @@ app.post('/login', (req, res) => {
 // Helper function to kill orphaned Chromium processes
 function killChromiumProcesses() {
     try {
-        // This works for Linux-based Railway and most Docker containers
-        // It kills all chrome/chromium/puppeteer browser processes
-        execSync("pkill -f '(chrome|chromium|puppeteer)' || true");
-        logger.info('Killed orphaned Chromium/Puppeteer processes.');
+        execSync("pkill -f '(chrome|chromium|puppeteer)' || true", { stdio: 'ignore' });
+        logger.info('Killed orphaned Chromium/Puppeteer processes (if any).');
     } catch (err) {
-        logger.error('Error killing Chromium/Puppeteer processes:', err);
+        // Only log if it's not the expected 'no process found' error
+        if (!err.message.includes('Command failed')) {
+            logger.error('Error killing Chromium/Puppeteer processes:', err);
+        }
+        // Otherwise, ignore (no processes to kill is fine)
     }
 }
 
