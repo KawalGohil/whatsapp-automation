@@ -277,74 +277,83 @@
         });
 
         // Set up socket event listeners
-function setupSocketListeners() {
-    // Remove any existing listeners first to prevent duplicates
-    socket.off('qr');
-    socket.off('status');
-    socket.off('error');
+        function setupSocketListeners() {
+            // Remove any existing listeners first to prevent duplicates
+            socket.off('qr');
+            socket.off('status');
+            socket.off('error');
 
-    // QR Code Handler
-    socket.on('qr', (qr) => {
-        // Clear any previous error states
-        statusDiv.className = 'status';
-        statusDiv.textContent = 'Scan this QR code with your WhatsApp to continue.';
-        
-        // Clear the QR code div and create a new canvas
-        qrcodeDiv.innerHTML = '';
-        const canvas = document.createElement('canvas');
-        
-        // Generate QR code with error handling
-        QRCode.toCanvas(canvas, qr, { 
-            width: 256,
-            margin: 2,
-            color: {
-                dark: '#000000',
-                light: '#ffffff'
-            }
-        }, (err) => {
-            if (err) {
-                console.error('Error generating QR code:', err);
+            // QR Code Handler
+            socket.on('qr', (qr) => {
+                // Clear any previous error states
+                statusDiv.className = 'status';
+                statusDiv.textContent = 'Scan this QR code with your WhatsApp to continue.';
+                
+                // Clear the QR code div and create a new canvas
+                qrcodeDiv.innerHTML = '';
+                const canvas = document.createElement('canvas');
+                
+                // Generate QR code with error handling
+                QRCode.toCanvas(canvas, qr, { 
+                    width: 256,
+                    margin: 2,
+                    color: {
+                        dark: '#000000',
+                        light: '#ffffff'
+                    }
+                }, (err) => {
+                    if (err) {
+                        console.error('Error generating QR code:', err);
+                        statusDiv.className = 'status error';
+                        statusDiv.textContent = 'Error generating QR code. Please try again.';
+                        return;
+                    }
+                    qrcodeDiv.appendChild(canvas);
+                });
+            });
+
+            // Status Message Handler
+            socket.on('status', (message) => {
+                // Map technical errors to user-friendly messages
+                let userMessage = message;
+                if (message.includes('Could not start WhatsApp session')) {
+                    userMessage = 'We could not start your WhatsApp session. Please try again in a few seconds.';
+                } else if (message.includes('Authentication failed')) {
+                    userMessage = 'Authentication failed. Please try again.';
+                } else if (message.includes('Client disconnected')) {
+                    userMessage = 'Your WhatsApp session was disconnected. Please refresh and log in again.';
+                } else if (message.includes('Error') || message.includes('error') || message.includes('fail') || message.includes('Fail')) {
+                    userMessage = 'An error occurred. Please try again.';
+                }
+                statusDiv.textContent = userMessage;
+                // Set appropriate status class based on message content
+                if (userMessage.includes('error') || userMessage.includes('Error') || 
+                    userMessage.includes('fail') || userMessage.includes('Fail') ||
+                    userMessage.includes('disconnected') || userMessage.includes('could not')) {
+                    statusDiv.className = 'status error';
+                } else if (userMessage.includes('ready')) {
+                    statusDiv.className = 'status success';
+                    qrcodeDiv.innerHTML = `
+                        <div class="status-container">
+                            <svg width="80" height="80" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <circle cx="12" cy="12" r="10" fill="#4CAF50"></circle>
+                                <path d="M8 12.3l2.7 2.7L16 9" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                            </svg>
+                            <h3>Client Ready</h3>
+                            <p>You can now create groups.</p>
+                        </div>`;
+                } else {
+                    statusDiv.className = 'status info';
+                }
+            });
+            
+            // Error Handler
+            socket.on('error', (error) => {
+                console.error('Socket error:', error);
                 statusDiv.className = 'status error';
-                statusDiv.textContent = 'Error generating QR code. Please try again.';
-                return;
-            }
-            qrcodeDiv.appendChild(canvas);
-        });
-    });
-
-    // Status Message Handler
-    socket.on('status', (message) => {
-        // Update status message
-        statusDiv.textContent = message;
-        
-        // Set appropriate status class based on message content
-        if (message.includes('error') || message.includes('Error') || 
-            message.includes('fail') || message.includes('Fail') ||
-            message.includes('disconnected')) {
-            statusDiv.className = 'status error';
-        } else if (message.includes('ready')) {
-            statusDiv.className = 'status success';
-            qrcodeDiv.innerHTML = `
-                <div class="status-container">
-                    <svg width="80" height="80" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <circle cx="12" cy="12" r="10" fill="#4CAF50"></circle>
-                        <path d="M8 12.3l2.7 2.7L16 9" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
-                    </svg>
-                    <h3>Client Ready</h3>
-                    <p>You can now create groups.</p>
-                </div>`;
-        } else {
-            statusDiv.className = 'status info';
+                statusDiv.textContent = 'Connection error. Please refresh the page and try again.';
+            });
         }
-    });
-    
-    // Error Handler
-    socket.on('error', (error) => {
-        console.error('Socket error:', error);
-        statusDiv.className = 'status error';
-        statusDiv.textContent = 'Connection error. Please refresh the page and try again.';
-    });
-}
         
         // Initialize socket listeners on page load
         setupSocketListeners();
