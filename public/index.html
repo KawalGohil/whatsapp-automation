@@ -259,24 +259,24 @@
                     credentials: 'include' // Important for session cookies
                 });
                 
+                const data = await response.json().catch(() => ({}));
                 if (response.ok) {
                     // Disconnect socket and clean up
                     socket.disconnect();
                     socket.off(); // Remove all event listeners
-                    
                     // Reset UI
                     showLogin();
-                    
                     // Force a small delay before allowing re-login
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 } else {
-                    const error = await response.text();
-                    console.error('Logout failed:', error);
-                    alert('Logout failed: ' + error);
+                    // Show error in statusDiv instead of alert
+                    statusDiv.textContent = data.error || 'Logout failed.';
+                    statusDiv.className = 'status error';
                 }
             } catch (error) {
                 console.error('Error during logout:', error);
-                alert('Error during logout: ' + error.message);
+                statusDiv.textContent = 'Error during logout: ' + error.message;
+                statusDiv.className = 'status error';
             }
         });
 

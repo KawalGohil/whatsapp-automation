@@ -114,16 +114,27 @@ app.post('/logout', async (req, res) => {
         }
         // Clear any pending initialization
         delete initializingSessions[username];
+
+        // --- Delete WhatsApp session folder for this user ---
+        const sessionDir = path.join(config.paths.session, username);
+        try {
+            if (fs.existsSync(sessionDir)) {
+                fs.rmSync(sessionDir, { recursive: true, force: true });
+                logger.info(`Deleted WhatsApp session folder for user: ${username}`);
+            }
+        } catch (err) {
+            logger.error(`Error deleting session folder for ${username}:`, err);
+        }
     }
     
     // Clear the session
     req.session.destroy((err) => {
         if (err) {
             logger.error('Error destroying session:', err);
-            return res.status(500).send('Could not log out.');
+            return res.status(500).json({ error: 'Could not log out.' });
         }
         res.clearCookie('connect.sid');
-        res.status(200).send({ message: 'Logged out successfully.' });
+        res.status(200).json({ message: 'Logged out successfully.' });
     });
 });
 
@@ -316,6 +327,12 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), (req, res) => {
                 }
             }
         });
+});
+
+// --- Error handling middleware for structured error responses ---
+app.use((err, req, res, next) => {
+    logger.error('Unhandled error:', err);
+    res.status(500).json({ error: err.message || 'Internal server error.' });
 });
 
 const PORT = process.env.PORT || 3000;
