@@ -1,10 +1,11 @@
 const path = require('path');
 
-// Render provides a persistent disk mount at /var/data
-// Use this for storing session and database files.
-const dataDir = process.env.NODE_ENV === 'production' 
-    ? '/var/data' 
-    : __dirname;
+// Use process.env.NODE_ENV if set, otherwise default to 'development'
+const isProduction = (process.env.NODE_ENV || 'development') === 'production';
+
+// Define base directory for persistent data
+// Use /var/data in production, or __dirname in development
+const dataDir = isProduction ? '/var/data' : __dirname;
 
 const config = {
     // Define paths for persistent data. This is used by database.js and server.js
@@ -25,8 +26,7 @@ const config = {
     // Puppeteer settings
     puppeteer: {
         // In production, Puppeteer MUST run in headless mode.
-        // Locally, this will be false unless NODE_ENV is set to 'production'.
-        headless: process.env.NODE_ENV === 'production',
+        headless: isProduction,
     },
 
     // Delays and rate-limiting from your original config
@@ -39,3 +39,12 @@ const config = {
     },
 };
 
+// Log the configuration for debugging (will be visible in Railway logs)
+console.log('Application configuration:', {
+    NODE_ENV: process.env.NODE_ENV,
+    isProduction,
+    dataDir,
+    paths: config.paths
+});
+
+module.exports = config;

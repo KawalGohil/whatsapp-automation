@@ -5,8 +5,9 @@
 const fs = require('fs');
 const path = require('path');
 const logger = require('./logger');
+const config = require('./config');
 
-const STATE_FILE = path.join(__dirname, 'state.json');
+const STATE_FILE = path.join(config.paths.data, 'state.json');
 
 // Function to read the current state from state.json
 function readState() {
