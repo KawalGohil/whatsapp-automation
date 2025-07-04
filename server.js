@@ -62,39 +62,39 @@ const upload = multer({ dest: uploadsDir });
 app.post('/register', (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) {
-        return res.status(400).send('Username and password are required.');
+        return res.status(400).json({ error: 'Username and password are required.' });
     }
 
     addUser(username, password, (err, user) => {
         if (err) {
             if (err.code === 'SQLITE_CONSTRAINT') {
-                return res.status(409).send('Username already exists.');
+                return res.status(409).json({ error: 'Username already exists.' });
             }
             logger.error('Error registering user:', err);
-            return res.status(500).send('Error registering user.');
+            return res.status(500).json({ error: 'Error registering user.' });
         }
         // Log the user in automatically after registration
         req.session.user = { id: user.id, username: username };
-        res.status(201).send({ message: 'User registered successfully.' });
+        res.status(201).json({ message: 'User registered successfully.' });
     });
 });
 
 app.post('/login', (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) {
-        return res.status(400).send('Username and password are required.');
+        return res.status(400).json({ error: 'Username and password are required.' });
     }
 
     findUser(username, password, (err, user) => {
         if (err) {
             logger.error('Error finding user:', err);
-            return res.status(500).send('Server error during login.');
+            return res.status(500).json({ error: 'Server error during login.' });
         }
         if (!user) {
-            return res.status(401).send('Invalid username or password.');
+            return res.status(401).json({ error: 'Invalid username or password.' });
         }
         req.session.user = { id: user.id, username: user.username };
-        res.status(200).send({ message: 'Login successful.' });
+        res.status(200).json({ message: 'Login successful.' });
     });
 });
 
@@ -293,7 +293,7 @@ io.on('connection', (socket) => {
     const username = socket.user.username;
     logger.info(`User '${username}' connected with socket ID: ${socket.id}`);
 
-    // Automatically initialize the client for the logged-in user
+    // Always re-initialize the client for the logged-in user on every connection
     initializeClient(username, socket);
 
     socket.on('disconnect', () => {
