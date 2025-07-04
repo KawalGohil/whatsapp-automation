@@ -12,6 +12,7 @@ const { createGroup } = require('./groupCreator');
 const session = require('express-session');
 const SQLiteStore = require('connect-sqlite3')(session);
 const { addUser, findUser } = require('./database');
+const { execSync } = require('child_process');
 
 const app = express();
 const server = http.createServer(app);
@@ -98,6 +99,18 @@ app.post('/login', (req, res) => {
     });
 });
 
+// Helper function to kill orphaned Chromium processes
+function killChromiumProcesses() {
+    try {
+        // This works for Linux-based Railway and most Docker containers
+        // It kills all chrome/chromium/puppeteer browser processes
+        execSync("pkill -f '(chrome|chromium|puppeteer)' || true");
+        logger.info('Killed orphaned Chromium/Puppeteer processes.');
+    } catch (err) {
+        logger.error('Error killing Chromium/Puppeteer processes:', err);
+    }
+}
+
 app.post('/logout', async (req, res) => {
     const username = req.session.user?.username;
     
@@ -114,6 +127,9 @@ app.post('/logout', async (req, res) => {
         }
         // Clear any pending initialization
         delete initializingSessions[username];
+
+        // --- Kill orphaned Chromium processes before deleting session folder ---
+        killChromiumProcesses();
 
         // --- Delete WhatsApp session folder for this user ---
         const sessionDir = path.join(config.paths.session, username);
@@ -240,6 +256,8 @@ async function initializeClient(clientId, socket, isRetry = false) {
         await client.initialize().catch(async err => {
             // --- New logic: If Puppeteer/Chromium launch error, clean up session dir and retry once ---
             if (!isRetry && err && (String(err).includes('Failed to launch the browser process') || String(err).includes('ProcessSingleton'))) {
+                // Kill orphaned Chromium processes before deleting session dir
+                killChromiumProcesses();
                 const sessionDir = path.join(config.paths.session, clientId);
                 try {
                     if (fs.existsSync(sessionDir)) {
