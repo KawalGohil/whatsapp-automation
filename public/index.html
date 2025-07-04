@@ -110,16 +110,35 @@
         }
 
         function showApp(username) {
-            currentUsername = username;
-            authContainer.classList.add('hidden');
-            appContainer.classList.remove('hidden');
-
-            // Reset UI state for the new session
+            // Clean up any existing state
             qrcodeDiv.innerHTML = '';
             statusDiv.textContent = 'Initializing session... Please wait.';
-
+            
+            // Disconnect any existing socket connection
+            if (socket.connected) {
+                socket.disconnect();
+            }
+            
+            // Clear any existing event listeners to prevent duplicates
+            socket.off('qr');
+            socket.off('authenticated');
+            socket.off('ready');
+            socket.off('disconnected');
+            socket.off('auth_failure');
+            
+            // Set up new connection
+            currentUsername = username;
             socket.auth = { username };
+            
+            // Connect to the server
             socket.connect();
+            
+            // Update UI
+            authContainer.classList.add('hidden');
+            appContainer.classList.remove('hidden');
+            
+            // Set up event listeners
+            setupSocketListeners();
         }
 
         function showLogin() {
@@ -233,8 +252,32 @@
         });
 
         logoutButton.addEventListener('click', async () => {
-            await fetch('/logout', { method: 'POST' });
-            showLogin();
+            try {
+                // Notify server to clean up
+                const response = await fetch('/logout', { 
+                    method: 'POST',
+                    credentials: 'include' // Important for session cookies
+                });
+                
+                if (response.ok) {
+                    // Disconnect socket and clean up
+                    socket.disconnect();
+                    socket.off(); // Remove all event listeners
+                    
+                    // Reset UI
+                    showLogin();
+                    
+                    // Force a small delay before allowing re-login
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                } else {
+                    const error = await response.text();
+                    console.error('Logout failed:', error);
+                    alert('Logout failed: ' + error);
+                }
+            } catch (error) {
+                console.error('Error during logout:', error);
+                alert('Error during logout: ' + error.message);
+            }
         });
 
         groupForm.addEventListener('submit', async (e) => {
@@ -249,30 +292,59 @@
             statusDiv.textContent = await response.text();
         });
 
-        // --- Socket.IO Handlers ---
-        socket.on('qr', (qr) => {
-            statusDiv.textContent = 'Scan this QR code with your WhatsApp.';
-            QRCode.toCanvas(document.createElement('canvas'), qr, { width: 256 }, (err, canvas) => {
-                if (err) return console.error(err);
-                qrcodeDiv.innerHTML = '';
-                qrcodeDiv.appendChild(canvas);
+        // Set up socket event listeners
+        function setupSocketListeners() {
+            // Remove any existing listeners first to prevent duplicates
+            socket.off('qr');
+            socket.off('authenticated');
+            socket.off('ready');
+            socket.off('disconnected');
+            socket.off('auth_failure');
+            socket.off('error');
+            
+            socket.on('qr', (qr) => {
+                console.log('Received QR code');
+                statusDiv.textContent = 'Scan this QR code with your WhatsApp.';
+                QRCode.toCanvas(document.createElement('canvas'), qr, { width: 256 }, (err, canvas) => {
+                    if (err) return console.error('QR code generation error:', err);
+                    qrcodeDiv.innerHTML = '';
+                    qrcodeDiv.appendChild(canvas);
+                });
             });
-        });
 
-        socket.on('status', (message) => {
-            statusDiv.textContent = message;
-            if (message.includes('Client is ready')) {
-                qrcodeDiv.innerHTML = `
-                    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%;">
-                        <svg width="80" height="80" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-bottom: 16px;">
-                            <circle cx="12" cy="12" r="10" fill="#4CAF50"></circle>
-                            <path d="M8 12.3l2.7 2.7L16 9" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
-                        </svg>
-                        <p style="font-size: 1.2em; color: #333; font-weight: bold; margin: 0;">Client Ready</p>
-                        <p style="font-size: 0.9em; color: #666; margin: 4px 0 0 0;">You can now create groups.</p>
-                    </div>`;
-            }
-        });
+            socket.on('authenticated', () => {
+                console.log('Client authenticated');
+                statusDiv.textContent = 'Authentication successful! Setting up WhatsApp...';
+                qrcodeDiv.innerHTML = ''; // Clear QR code after successful authentication
+            });
+
+            socket.on('ready', () => {
+                console.log('WhatsApp client is ready');
+                statusDiv.textContent = 'WhatsApp is ready! You can now create groups.';
+                groupForm.style.display = 'block';
+            });
+
+            socket.on('disconnected', (reason) => {
+                console.log('WhatsApp client disconnected:', reason);
+                statusDiv.textContent = 'WhatsApp session ended. Please log in again.';
+                groupForm.style.display = 'none';
+            });
+
+            socket.on('auth_failure', (msg) => {
+                console.error('Authentication failed:', msg);
+                statusDiv.textContent = 'Authentication failed. Please log out and try again.';
+                statusDiv.className = 'auth-status error';
+            });
+            
+            socket.on('error', (error) => {
+                console.error('Socket error:', error);
+                statusDiv.textContent = 'Connection error. Please try refreshing the page.';
+                statusDiv.className = 'auth-status error';
+            });
+        }
+        
+        // Initialize socket listeners on page load
+        setupSocketListeners();
 
         // Check login status on page load
         (async function() {

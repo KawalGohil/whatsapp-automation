@@ -98,13 +98,27 @@ app.post('/login', (req, res) => {
     });
 });
 
-app.post('/logout', (req, res) => {
+app.post('/logout', async (req, res) => {
+    const username = req.session.user?.username;
+    
+    // Clean up the WhatsApp client instance if it exists
+    if (username && clients[username]) {
+        try {
+            logger.info(`Destroying WhatsApp client for user: ${username}`);
+            await clients[username].destroy();
+            delete clients[username];
+        } catch (error) {
+            logger.error(`Error destroying WhatsApp client for ${username}:`, error);
+        }
+    }
+    
+    // Clear the session
     req.session.destroy((err) => {
         if (err) {
             logger.error('Error destroying session:', err);
             return res.status(500).send('Could not log out.');
         }
-        res.clearCookie('connect.sid'); // Default session cookie name
+        res.clearCookie('connect.sid');
         res.status(200).send({ message: 'Logged out successfully.' });
     });
 });
