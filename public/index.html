@@ -293,55 +293,74 @@
         });
 
         // Set up socket event listeners
-        function setupSocketListeners() {
-            // Remove any existing listeners first to prevent duplicates
-            socket.off('qr');
-            socket.off('authenticated');
-            socket.off('ready');
-            socket.off('disconnected');
-            socket.off('auth_failure');
-            socket.off('error');
-            
-            socket.on('qr', (qr) => {
-                console.log('Received QR code');
-                statusDiv.textContent = 'Scan this QR code with your WhatsApp.';
-                QRCode.toCanvas(document.createElement('canvas'), qr, { width: 256 }, (err, canvas) => {
-                    if (err) return console.error('QR code generation error:', err);
-                    qrcodeDiv.innerHTML = '';
-                    qrcodeDiv.appendChild(canvas);
-                });
-            });
+function setupSocketListeners() {
+    // Remove any existing listeners first to prevent duplicates
+    socket.off('qr');
+    socket.off('status');
+    socket.off('error');
 
-            socket.on('authenticated', () => {
-                console.log('Client authenticated');
-                statusDiv.textContent = 'Authentication successful! Setting up WhatsApp...';
-                qrcodeDiv.innerHTML = ''; // Clear QR code after successful authentication
-            });
+    // QR Code Handler
+    socket.on('qr', (qr) => {
+        // Clear any previous error states
+        statusDiv.className = 'status';
+        statusDiv.textContent = 'Scan this QR code with your WhatsApp to continue.';
+        
+        // Clear the QR code div and create a new canvas
+        qrcodeDiv.innerHTML = '';
+        const canvas = document.createElement('canvas');
+        
+        // Generate QR code with error handling
+        QRCode.toCanvas(canvas, qr, { 
+            width: 256,
+            margin: 2,
+            color: {
+                dark: '#000000',
+                light: '#ffffff'
+            }
+        }, (err) => {
+            if (err) {
+                console.error('Error generating QR code:', err);
+                statusDiv.className = 'status error';
+                statusDiv.textContent = 'Error generating QR code. Please try again.';
+                return;
+            }
+            qrcodeDiv.appendChild(canvas);
+        });
+    });
 
-            socket.on('ready', () => {
-                console.log('WhatsApp client is ready');
-                statusDiv.textContent = 'WhatsApp is ready! You can now create groups.';
-                groupForm.style.display = 'block';
-            });
-
-            socket.on('disconnected', (reason) => {
-                console.log('WhatsApp client disconnected:', reason);
-                statusDiv.textContent = 'WhatsApp session ended. Please log in again.';
-                groupForm.style.display = 'none';
-            });
-
-            socket.on('auth_failure', (msg) => {
-                console.error('Authentication failed:', msg);
-                statusDiv.textContent = 'Authentication failed. Please log out and try again.';
-                statusDiv.className = 'auth-status error';
-            });
-            
-            socket.on('error', (error) => {
-                console.error('Socket error:', error);
-                statusDiv.textContent = 'Connection error. Please try refreshing the page.';
-                statusDiv.className = 'auth-status error';
-            });
+    // Status Message Handler
+    socket.on('status', (message) => {
+        // Update status message
+        statusDiv.textContent = message;
+        
+        // Set appropriate status class based on message content
+        if (message.includes('error') || message.includes('Error') || 
+            message.includes('fail') || message.includes('Fail') ||
+            message.includes('disconnected')) {
+            statusDiv.className = 'status error';
+        } else if (message.includes('ready')) {
+            statusDiv.className = 'status success';
+            qrcodeDiv.innerHTML = `
+                <div class="status-container">
+                    <svg width="80" height="80" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="12" cy="12" r="10" fill="#4CAF50"></circle>
+                        <path d="M8 12.3l2.7 2.7L16 9" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                    <h3>Client Ready</h3>
+                    <p>You can now create groups.</p>
+                </div>`;
+        } else {
+            statusDiv.className = 'status info';
         }
+    });
+    
+    // Error Handler
+    socket.on('error', (error) => {
+        console.error('Socket error:', error);
+        statusDiv.className = 'status error';
+        statusDiv.textContent = 'Connection error. Please refresh the page and try again.';
+    });
+}
         
         // Initialize socket listeners on page load
         setupSocketListeners();

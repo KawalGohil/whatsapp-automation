@@ -102,14 +102,18 @@ app.post('/logout', async (req, res) => {
     const username = req.session.user?.username;
     
     // Clean up the WhatsApp client instance if it exists
-    if (username && clients[username]) {
-        try {
-            logger.info(`Destroying WhatsApp client for user: ${username}`);
-            await clients[username].destroy();
-            delete clients[username];
-        } catch (error) {
-            logger.error(`Error destroying WhatsApp client for ${username}:`, error);
+    if (username) {
+        if (clients[username]) {
+            try {
+                logger.info(`Destroying WhatsApp client for user: ${username}`);
+                await clients[username].destroy();
+                delete clients[username];
+            } catch (error) {
+                logger.error(`Error destroying WhatsApp client for ${username}:`, error);
+            }
         }
+        // Clear any pending initialization
+        delete initializingSessions[username];
     }
     
     // Clear the session
@@ -146,7 +150,7 @@ const initializingSessions = {}; // Tracks sessions that are currently starting 
 async function initializeClient(clientId, socket) {
     logger.info(`Initialization request for session: ${clientId}`);
 
-    // If a client for this session already exists, destroy it to ensure a clean start.
+    // If a client for this session already exists, destroy it to ensure a clean start
     if (clients[clientId]) {
         logger.warn(`An existing client for session ${clientId} was found. Destroying it before re-initializing.`);
         try {
@@ -161,7 +165,8 @@ async function initializeClient(clientId, socket) {
     // If another request is already initializing this session, tell the user to wait.
     if (initializingSessions[clientId]) {
         logger.info(`Session for ${clientId} is already initializing. Notifying client to wait.`);
-        return socket.emit('status', 'Session is currently initializing, please wait...');
+        socket.emit('status', 'Please wait while we prepare your session...');
+        return;
     }
 
     try {
@@ -169,10 +174,7 @@ async function initializeClient(clientId, socket) {
         logger.info(`Initializing new WhatsApp client for session: ${clientId}`);
 
         const client = new Client({
-            authStrategy: new LocalAuth({ 
-                clientId, 
-                dataPath: config.paths.session 
-            }),
+            authStrategy: new LocalAuth({ clientId }),
             puppeteer: {
                 headless: config.puppeteer.headless,
                 args: [
@@ -182,9 +184,9 @@ async function initializeClient(clientId, socket) {
                     '--disable-accelerated-2d-canvas',
                     '--no-first-run',
                     '--no-zygote',
-                    '--disable-gpu',
+                    '--disable-gpu'
                 ],
-            },
+            }
         });
 
         client.on('qr', (qr) => {
@@ -200,8 +202,9 @@ async function initializeClient(clientId, socket) {
         });
 
         client.on('auth_failure', (msg) => {
+            const errorMsg = `Authentication failed: ${msg}. Please try again.`;
             logger.error(`Authentication failure for ${clientId}: ${msg}`);
-            socket.emit('status', `Authentication failure: ${msg}. Please try again.`);
+            socket.emit('status', errorMsg);
             delete initializingSessions[clientId];
         });
 
@@ -212,8 +215,12 @@ async function initializeClient(clientId, socket) {
             if (initializingSessions[clientId]) delete initializingSessions[clientId];
         });
 
-        await client.initialize();
-
+        await client.initialize().catch(err => {
+            const errorMsg = 'Failed to initialize WhatsApp client. Please try again.';
+            logger.error(`Failed to initialize client for ${clientId}:`, err);
+            socket.emit('status', errorMsg);
+            delete initializingSessions[clientId];
+        });
     } catch (err) {
         logger.error(`Failed to initialize client for ${clientId}:`, err);
         socket.emit('status', 'Error: Could not initialize WhatsApp session.');
