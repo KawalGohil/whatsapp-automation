@@ -19,6 +19,23 @@
         button:hover { background-color: #166fe5; }
         .auth-toggle { text-align: center; margin-top: 15px; color: #1877f2; cursor: pointer; }
         #logout-button { background-color: #d93025; position: absolute; top: 20px; right: 20px; }
+
+        /* --- Responsive Styles --- */
+        @media (max-width: 600px) {
+            body { margin: 10px; }
+            .container { max-width: 100%; padding: 10px; border-radius: 0; box-shadow: none; }
+            #qrcode { width: 180px; height: 180px; padding: 5px; }
+            input[type="text"], input[type="password"], input[type="file"], button { font-size: 15px; padding: 10px; }
+            h1 { font-size: 1.6em; }
+            h2 { font-size: 1.2em; }
+            #logout-button { position: static; width: 100%; margin-bottom: 10px; }
+        }
+        @media (max-width: 400px) {
+            #qrcode { width: 120px; height: 120px; }
+            h1 { font-size: 1.2em; }
+            h2 { font-size: 1em; }
+            button, input[type="text"], input[type="password"], input[type="file"] { font-size: 14px; padding: 8px; }
+        }
     </style>
 </head>
 <body>
