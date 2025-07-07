@@ -335,49 +335,78 @@ io.on('connection', (socket) => {
 });
 
 // --- Routes ---
-app.post('/upload', isAuthenticated, upload.single('contacts'), (req, res) => {
-    const { groupName } = req.body;
-    const contactsFile = req.file;
+app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res) => {
     const sanitizedClientId = req.session.user.username; // Use username from session
-
     if (!sanitizedClientId || !clients[sanitizedClientId]) {
         return res.status(400).send('Invalid or inactive session. Please login again.');
     }
 
-    if (!groupName || !contactsFile) {
-        return res.status(400).send('Group name and contacts file are required.');
+    // Support both file upload and manual entry
+    let groupName;
+    let contacts = [];
+
+    // If Content-Type is JSON, expect manual entry
+    if (req.is('application/json')) {
+        groupName = req.body.groupName;
+        const numbers = req.body.numbers;
+        if (!groupName || !Array.isArray(numbers) || numbers.length === 0) {
+            return res.status(400).send('Group name and at least one phone number are required.');
+        }
+        // Sanitize and format numbers
+        contacts = numbers.map(n => {
+            let num = String(n).replace(/[^0-9]/g, '');
+            return num ? `${num}@c.us` : null;
+        }).filter(Boolean);
+        if (contacts.length === 0) {
+            return res.status(400).send('No valid phone numbers provided.');
+        }
+    } else {
+        // File upload mode
+        groupName = req.body.groupName;
+        const contactsFile = req.file;
+        if (!groupName || !contactsFile) {
+            return res.status(400).send('Group name and contacts file are required.');
+        }
+        try {
+            contacts = await new Promise((resolve, reject) => {
+                const result = [];
+                fs.createReadStream(contactsFile.path)
+                    .pipe(csv())
+                    .on('data', (row) => {
+                        if (row.phone) {
+                            let num = String(row.phone).replace(/[^0-9]/g, '');
+                            if (num) result.push(`${num}@c.us`);
+                        }
+                    })
+                    .on('end', () => {
+                        fs.unlinkSync(contactsFile.path);
+                        resolve(result);
+                    })
+                    .on('error', (err) => {
+                        fs.unlinkSync(contactsFile.path);
+                        reject(err);
+                    });
+            });
+        } catch (err) {
+            logger.error('Error processing CSV:', err);
+            return res.status(400).send('Failed to process CSV file.');
+        }
+        if (contacts.length === 0) {
+            return res.status(400).send('No contacts with a valid phone number found in the CSV.');
+        }
     }
 
-    const contacts = [];
-    fs.createReadStream(contactsFile.path)
-        .pipe(csv())
-        .on('data', (row) => {
-            if (row.phone) {
-                contacts.push(`${row.phone}@c.us`);
-            }
-        })
-        .on('end', async () => {
-            fs.unlinkSync(contactsFile.path);
-
-            if (contacts.length === 0) {
-                const errorMsg = 'No contacts with a \'phone\' column found in the CSV.';
-                logger.error(errorMsg);
-                return res.status(400).send(errorMsg);
-            }
-
-            logger.info(`Creating group '${groupName}' for session ${sanitizedClientId}.`);
-
-            try {
-                await createGroup(clients[sanitizedClientId], groupName, contacts);
-                res.send('Group creation process started.');
-            } catch (error) {
-                const errorMsg = `Failed to create group: ${error.message}`;
-                logger.error(errorMsg);
-                if (!res.headersSent) {
-                    res.status(500).send(errorMsg);
-                }
-            }
-        });
+    logger.info(`Creating group '${groupName}' for session ${sanitizedClientId}.`);
+    try {
+        await createGroup(clients[sanitizedClientId], groupName, contacts);
+        res.send('Group creation process started.');
+    } catch (error) {
+        const errorMsg = `Failed to create group: ${error.message}`;
+        logger.error(errorMsg);
+        if (!res.headersSent) {
+            res.status(500).send(errorMsg);
+        }
+    }
 });
 
 // --- Error handling middleware for structured error responses ---
