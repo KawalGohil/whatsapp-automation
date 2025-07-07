@@ -10,8 +10,8 @@
         .container { max-width: 600px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         h1, h2 { text-align: center; color: #1877f2; }
         .hidden { display: none !important; }
-        #qrcode { width: 256px; height: 256px; margin: 20px auto; border: 1px solid #ddd; padding: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #fafbfc; box-sizing: border-box; }
-        #qrcode canvas { max-width: 100%; height: auto; display: block; }
+        #qrcode { width: 256px; height: 256px; margin: 20px auto; border: 1px solid #ddd; padding: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #fafbfc; box-sizing: border-box; aspect-ratio: 1 / 1; }
+        #qrcode canvas { max-width: 100%; max-height: 100%; width: 100% !important; height: auto !important; aspect-ratio: 1 / 1; display: block; }
         .status-container { display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 10px; }
         .status-container h3, .status-container p { text-align: center; margin: 0.5em 0 0 0; }
         #status { margin-top: 20px; text-align: center; font-weight: bold; color: #333; word-break: break-word; }
@@ -38,7 +38,8 @@
             #logout-button { position: static; width: 100%; margin-bottom: 10px; }
         }
         @media (max-width: 400px) {
-            #qrcode { max-width: 120px; min-height: 80px; }
+            #qrcode { max-width: 120px; min-width: 80px; min-height: 80px; aspect-ratio: 1 / 1; height: auto; }
+            #qrcode canvas { max-width: 100%; max-height: 100%; width: 100% !important; height: auto !important; aspect-ratio: 1 / 1; }
             .status-container h3 { font-size: 1em; }
             .status-container p { font-size: 0.95em; }
             #status { font-size: 0.95em; }
@@ -82,7 +83,15 @@
             <h2>Create New Group</h2>
             <form id="group-form">
                 <input type="text" id="groupName" placeholder="Enter Group Name" required>
-                <input type="file" id="contacts" accept=".csv" required>
+                <div id="input-toggle-container" style="margin-bottom: 10px;">
+                  <button type="button" id="toggle-input-mode" style="width: 100%;">Switch to Manual Entry</button>
+                </div>
+                <div id="file-input-section">
+                  <input type="file" id="contacts" accept=".csv">
+                </div>
+                <div id="manual-input-section" class="hidden">
+                  <textarea id="manualNumbers" placeholder="Enter phone numbers, one per line or comma-separated" rows="4" style="width: 100%; resize: vertical;"></textarea>
+                </div>
                 <button type="submit">Create Group</button>
             </form>
         </div>
@@ -127,6 +136,10 @@
         const statusDiv = document.getElementById('status');
         const groupForm = document.getElementById('group-form');
         const logoutButton = document.getElementById('logout-button');
+        const toggleInputModeBtn = document.getElementById('toggle-input-mode');
+        const fileInputSection = document.getElementById('file-input-section');
+        const manualInputSection = document.getElementById('manual-input-section');
+        const manualNumbers = document.getElementById('manualNumbers');
 
         // --- UI Logic ---
         function toggleAuthView() {
@@ -182,6 +195,20 @@
             qrcodeDiv.innerHTML = '';
             statusDiv.textContent = 'Connecting to WhatsApp...';
         }
+
+        let manualMode = false;
+        toggleInputModeBtn.addEventListener('click', () => {
+          manualMode = !manualMode;
+          if (manualMode) {
+            fileInputSection.classList.add('hidden');
+            manualInputSection.classList.remove('hidden');
+            toggleInputModeBtn.textContent = 'Switch to File Upload';
+          } else {
+            fileInputSection.classList.remove('hidden');
+            manualInputSection.classList.add('hidden');
+            toggleInputModeBtn.textContent = 'Switch to Manual Entry';
+          }
+        });
 
         // --- Event Listeners ---
         loginForm.addEventListener('submit', async (e) => {
@@ -313,14 +340,41 @@
 
         groupForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const formData = new FormData();
-            formData.append('groupName', groupForm.querySelector('#groupName').value);
-            formData.append('contacts', groupForm.querySelector('#contacts').files[0]);
-            formData.append('clientId', currentUsername); // Use username as the session identifier
-
+            const groupName = groupForm.querySelector('#groupName').value;
             statusDiv.textContent = 'Uploading contacts and creating group...';
-            const response = await fetch('/upload', { method: 'POST', body: formData });
-            statusDiv.textContent = await response.text();
+            if (manualMode) {
+                // Manual entry mode
+                const numbersRaw = manualNumbers.value;
+                if (!numbersRaw.trim()) {
+                    statusDiv.textContent = 'Please enter at least one phone number.';
+                    return;
+                }
+                // Parse numbers (split by comma or newline)
+                const numbers = numbersRaw.split(/[,\n]/).map(n => n.trim()).filter(n => n);
+                if (numbers.length === 0) {
+                    statusDiv.textContent = 'Please enter at least one valid phone number.';
+                    return;
+                }
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ groupName, numbers, clientId: currentUsername })
+                });
+                statusDiv.textContent = await response.text();
+            } else {
+                // File upload mode
+                const contactsFile = groupForm.querySelector('#contacts').files[0];
+                if (!contactsFile) {
+                    statusDiv.textContent = 'Please select a CSV file or switch to manual entry.';
+                    return;
+                }
+                const formData = new FormData();
+                formData.append('groupName', groupName);
+                formData.append('contacts', contactsFile);
+                formData.append('clientId', currentUsername);
+                const response = await fetch('/upload', { method: 'POST', body: formData });
+                statusDiv.textContent = await response.text();
+            }
         });
 
         // Set up socket event listeners
