@@ -10,8 +10,12 @@
         .container { max-width: 600px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         h1, h2 { text-align: center; color: #1877f2; }
         .hidden { display: none !important; }
-        #qrcode { width: 256px; height: 256px; margin: 20px auto; border: 1px solid #ddd; padding: 10px; }
-        #status, .auth-status { margin-top: 20px; text-align: center; font-weight: bold; color: #333; }
+        #qrcode { width: 256px; height: 256px; margin: 20px auto; border: 1px solid #ddd; padding: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #fafbfc; box-sizing: border-box; }
+        #qrcode canvas { max-width: 100%; height: auto; display: block; }
+        .status-container { display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 10px; }
+        .status-container h3, .status-container p { text-align: center; margin: 0.5em 0 0 0; }
+        #status { margin-top: 20px; text-align: center; font-weight: bold; color: #333; word-break: break-word; }
+        .auth-status { margin-top: 20px; text-align: center; font-weight: bold; color: #333; }
         .auth-status.error { color: #d93025; }
         form { display: flex; flex-direction: column; gap: 15px; }
         input[type="text"], input[type="password"], input[type="file"] { padding: 10px; border-radius: 6px; border: 1px solid #ddd; font-size: 16px; }
@@ -24,16 +28,20 @@
         @media (max-width: 600px) {
             body { margin: 10px; }
             .container { max-width: 100%; padding: 10px; border-radius: 0; box-shadow: none; }
-            #qrcode { width: 180px; height: 180px; padding: 5px; }
+            #qrcode { width: 100%; max-width: 180px; height: auto; min-height: 120px; padding: 5px; }
+            #qrcode canvas { max-width: 100%; height: auto; }
+            .status-container { margin-top: 8px; }
+            #status { font-size: 1em; margin-top: 12px; }
             input[type="text"], input[type="password"], input[type="file"], button { font-size: 15px; padding: 10px; }
             h1 { font-size: 1.6em; }
             h2 { font-size: 1.2em; }
             #logout-button { position: static; width: 100%; margin-bottom: 10px; }
         }
         @media (max-width: 400px) {
-            #qrcode { width: 120px; height: 120px; }
-            h1 { font-size: 1.2em; }
-            h2 { font-size: 1em; }
+            #qrcode { max-width: 120px; min-height: 80px; }
+            .status-container h3 { font-size: 1em; }
+            .status-container p { font-size: 0.95em; }
+            #status { font-size: 0.95em; }
             button, input[type="text"], input[type="password"], input[type="file"] { font-size: 14px; padding: 8px; }
         }
     </style>
