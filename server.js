@@ -408,23 +408,12 @@ io.use((socket, next) => {
     }
     
     logger.warn('[SOCKET.IO] Unauthorized socket connection attempt.');
-    next(new Error('Unauthorized'));
-});
+     next(new Error('Unauthorized'));
+  });
 
 // Handle new connections
 io.on('connection', (socket) => {
     logger.info(`[SOCKET.IO] User connected: ${socket.user?.username || 'Unknown'}. Socket ID: ${socket.id}`);
-    
-    // Handle disconnection
-    socket.on('disconnect', (reason) => {
-        logger.info(`[SOCKET.IO] User disconnected: ${socket.user?.username || 'Unknown'}. Socket ID: ${socket.id}. Reason: ${reason}`);
-    });
-    
-    // Handle errors
-    socket.on('error', (error) => {
-        console.error('Socket error:', error);
-    });
-});
 
     const username = socket.user.username;
     userSockets[username] = socket.id; // Store the current socket ID for the user
@@ -457,11 +446,12 @@ io.on('connection', (socket) => {
             delete userSockets[username];
         }
     });
-    
+
     // Handle errors
     socket.on('error', (error) => {
         console.error('Socket error:', error);
     });
+});
 
 
 // --- Routes ---
