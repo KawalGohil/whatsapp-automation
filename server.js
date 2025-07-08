@@ -336,7 +336,7 @@ async function initializeClient(clientId, io, isRetry = false) {
             logger.info(`[DEBUG] Client state changed for ${clientId}: ${state}`);
         });
         client.on('message', (msg) => {
-            logger.info(`[DEBUG] Message event for ${clientId}: ${msg.body}`);
+            // logger.info(`[DEBUG] Message event for ${clientId}: ${msg.body}`); // Commented out to prevent logging chat messages
         });
         client.on('authenticated', () => {
             logger.info(`[DEBUG] Client for ${clientId} authenticated.`);
