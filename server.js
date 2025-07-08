@@ -503,48 +503,31 @@ async function initializeClient(clientId, socket, isRetry = false) {
             // Clear the timeout on error
             clearTimeout(initTimeout);
             
-            // Handle Puppeteer/Chromium launch errors with cleanup and retry
             const errorMessage = String(err);
-            const isPuppeteerError = errorMessage.includes('Failed to launch the browser process') || 
-                                   errorMessage.includes('ProcessSingleton') ||
-                                   errorMessage.includes('Navigation timeout');
+            logger.error(`[DEBUG] Error during client initialization for ${clientId}:`, errorMessage);
             
-            if (!isRetry && isPuppeteerError) {
-                logger.error(`[DEBUG] Puppeteer error for ${clientId}, cleaning up and retrying:`, err);
-                
-                // Kill orphaned Chromium processes before deleting session dir
-                killChromiumProcesses();
-                
-                // Clean up session directory
-                const sessionDir = path.join(config.paths.session, clientId);
-                try {
-                    if (fs.existsSync(sessionDir)) {
-                        fs.rmSync(sessionDir, { recursive: true, force: true });
-                        logger.info(`[DEBUG] Deleted session directory for ${clientId} due to Puppeteer launch error.`);
-                    }
-                } catch (cleanupErr) {
-                    logger.error(`[DEBUG] Error cleaning up session directory for ${clientId}:`, cleanupErr);
-                }
-                // Retry initialization once
-                logger.info(`[DEBUG] Retrying WhatsApp client initialization for ${clientId} after session cleanup.`);
-                delete initializingSessions[clientId];
-                await initializeClient(clientId, socket, true);
-                return;
-            }
-            // User-friendly error message
-            const userFriendlyMsg = 'Could not start WhatsApp session. Please try again in a few seconds.';
-            logger.error(`[DEBUG] Failed to initialize client for ${clientId}:`, err);
+            // Handle different types of errors
+            const isPuppeteerError = [
+                'Failed to launch the browser process',
+                'ProcessSingleton',
+                'Navigation timeout',
+                'Session closed',
+                'Protocol error',
+                'Navigation failed'
+            ].some(term => errorMessage.includes(term));
             
             // Clean up any remaining resources
             delete initializingSessions[clientId];
             delete latestQRCodes[clientId];
             
-            // Try to destroy the client if it exists
-            if (client) {
+            // Safely destroy the client if it exists and is still valid
+            if (client && typeof client.destroy === 'function') {
                 try {
-                    await client.destroy();
+                    await client.destroy().catch(e => {
+                        logger.warn(`[DEBUG] Non-fatal error during client cleanup:`, e);
+                    });
                 } catch (e) {
-                    logger.error(`[DEBUG] Error destroying client after initialization failure:`, e);
+                    logger.warn(`[DEBUG] Error during client cleanup:`, e);
                 } finally {
                     delete clients[clientId];
                 }
@@ -556,31 +539,97 @@ async function initializeClient(clientId, socket, isRetry = false) {
                 userFriendlyMessage = 'Connection timed out. Please check your internet connection and try again.';
             } else if (errorMessage.includes('Failed to launch browser') || errorMessage.includes('ProcessSingleton')) {
                 userFriendlyMessage = 'Could not start browser. The system may be busy. Please try again in a moment.';
+            } else if (errorMessage.includes('Session closed') || errorMessage.includes('Protocol error')) {
+                userFriendlyMessage = 'Connection lost. Trying to reconnect...';
+                // Only retry if we haven't already retried
+                if (!isRetry) {
+                    logger.info(`[DEBUG] Attempting to recover from connection error for ${clientId}`);
+                    setTimeout(() => initializeClient(clientId, socket, true), 2000);
+                    return;
+                }
             }
             
             socket.emit('status', userFriendlyMessage);
             socket.emit('error', { 
                 code: 'INIT_FAILED', 
                 message: errorMessage,
-                retryable: false
+                retryable: !isRetry && isPuppeteerError
             });
             
             // Clean up session directory to force fresh login on next attempt
-            const sessionDir = path.join(config.paths.session, clientId);
-            try {
-                if (fs.existsSync(sessionDir)) {
-                    fs.rmSync(sessionDir, { recursive: true, force: true });
-                    logger.info(`[DEBUG] Cleared session directory after initialization failure for ${clientId}`);
+            if (isPuppeteerError) {
+                const sessionDir = path.join(config.paths.session, clientId);
+                try {
+                    if (fs.existsSync(sessionDir)) {
+                        fs.rmSync(sessionDir, { recursive: true, force: true });
+                        logger.info(`[DEBUG] Cleared session directory after error for ${clientId}`);
+                    }
+                } catch (e) {
+                    logger.error(`[DEBUG] Error cleaning up session directory:`, e);
                 }
-            } catch (e) {
-                logger.error(`[DEBUG] Error cleaning up session directory:`, e);
             }
         }
     } catch (err) {
-        logger.error(`[DEBUG] Failed to initialize client for ${clientId}:`, err);
-        socket.emit('status', 'Could not start WhatsApp session. Please try again in a few seconds.');
-        delete initializingSessions[clientId];
-        delete latestQRCodes[clientId];
+        // Clear the timeout on error
+        clearTimeout(initTimeout);
+        
+        const errorMessage = String(err);
+        logger.error(`[DEBUG] Error during client initialization for ${clientId}:`, errorMessage);
+        
+        // Handle different types of errors
+        const isPuppeteerError = [
+            'Failed to launch the browser process',
+            'ProcessSingleton',
+            'Navigation timeout',
+            'Session closed',
+            'Protocol error',
+            'Navigation failed'
+        ].some(term => errorMessage.includes(term));
+        
+        // Only retry if it's a retryable error and we haven't retried yet
+        if (!isRetry && isPuppeteerError) {
+            logger.info(`[DEBUG] Attempting to recover from error for ${clientId} with a retry...`);
+        
+        // Clean up any existing client
+        try {
+            if (client && typeof client.destroy === 'function') {
+                await client.destroy().catch(e => {
+                    logger.warn(`[DEBUG] Error during client cleanup before retry:`, e);
+                });
+            }
+        } catch (e) {
+            logger.warn(`[DEBUG] Error during client cleanup before retry:`, e);
+            
+            // Notify the client with a user-friendly message
+            let userFriendlyMessage = 'Failed to connect to WhatsApp. Please try again later.';
+            if (errorMessage.includes('timeout') || errorMessage.includes('Navigation timeout')) {
+                userFriendlyMessage = 'Connection timed out. Please check your internet connection and try again.';
+            } else if (errorMessage.includes('Failed to launch browser') || errorMessage.includes('ProcessSingleton')) {
+                userFriendlyMessage = 'Could not start browser. The system may be busy. Please try again in a moment.';
+            } else if (errorMessage.includes('Session closed') || errorMessage.includes('Protocol error')) {
+                userFriendlyMessage = 'Connection lost. Please try again.';
+            }
+            
+            socket.emit('status', userFriendlyMessage);
+            socket.emit('error', { 
+                code: 'INIT_FAILED', 
+                message: errorMessage,
+                retryable: !isRetry && isPuppeteerError
+            });
+            
+            // Clean up session directory to force fresh login on next attempt
+            if (isPuppeteerError) {
+                const sessionDir = path.join(config.paths.session, clientId);
+                try {
+                    if (fs.existsSync(sessionDir)) {
+                        fs.rmSync(sessionDir, { recursive: true, force: true });
+                        logger.info(`[DEBUG] Cleared session directory after error for ${clientId}`);
+                    }
+                } catch (e) {
+                    logger.error(`[DEBUG] Error cleaning up session directory:`, e);
+                }
+            }
+        }
     }
 }
 
@@ -737,4 +786,4 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     logger.info(`Server is listening on port ${PORT}`);
-});
+})};
