@@ -126,33 +126,47 @@ function killChromiumProcesses() {
 app.post('/logout', async (req, res) => {
     const username = req.session.user?.username;
     
-    // Clean up the WhatsApp client instance if it exists
-    if (username) {
-        if (clients[username]) {
-            try {
-                logger.info(`Destroying WhatsApp client for user: ${username}`);
-                await clients[username].destroy();
-                delete clients[username];
-            } catch (error) {
-                logger.error(`Error destroying WhatsApp client for ${username}:`, error);
-            }
-        }
-        // Clear any pending initialization
-        delete initializingSessions[username];
+    if (!username) {
+        return res.status(400).json({ error: 'No user session found' });
+    }
 
-        // --- Kill orphaned Chromium processes before deleting session folder ---
-        killChromiumProcesses();
-
-        // --- Delete WhatsApp session folder for this user ---
-        const sessionDir = path.join(config.paths.session, username);
+    logger.info(`Starting logout process for user: ${username}`);
+    
+    // 1. Clean up the WhatsApp client instance if it exists
+    if (clients[username]) {
         try {
-            if (fs.existsSync(sessionDir)) {
-                fs.rmSync(sessionDir, { recursive: true, force: true });
-                logger.info(`Deleted WhatsApp session folder for user: ${username}`);
-            }
-        } catch (err) {
-            logger.error(`Error deleting session folder for ${username}:`, err);
+            logger.info(`Destroying WhatsApp client for user: ${username}`);
+            await clients[username].destroy();
+            delete clients[username];
+            logger.info(`Successfully destroyed WhatsApp client for user: ${username}`);
+        } catch (error) {
+            logger.error(`Error destroying WhatsApp client for ${username}:`, error);
         }
+    }
+
+    // 2. Clear any pending initialization and QR codes
+    delete initializingSessions[username];
+    delete latestQRCodes[username];
+
+    // 3. Kill orphaned Chromium processes
+    try {
+        killChromiumProcesses();
+        logger.info(`Killed orphaned Chromium processes for user: ${username}`);
+    } catch (error) {
+        logger.error(`Error killing Chromium processes for ${username}:`, error);
+    }
+
+    // 4. Delete WhatsApp session folder
+    const sessionDir = path.join(config.paths.session, username);
+    try {
+        if (fs.existsSync(sessionDir)) {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+            logger.info(`Deleted WhatsApp session folder for user: ${username}`);
+        } else {
+            logger.info(`No session folder found for user: ${username}`);
+        }
+    } catch (err) {
+        logger.error(`Error deleting session folder for ${username}:`, err);
     }
     
     // Clear the session
@@ -190,34 +204,74 @@ const latestQRCodes = {}; // Stores the latest QR code for each client
 async function initializeClient(clientId, socket, isRetry = false) {
     logger.info(`[DEBUG] Initialization request for session: ${clientId}${isRetry ? ' (retry)' : ''}`);
 
-    // If a client for this session is already ready, skip re-initialization
-    if (clients[clientId] && clients[clientId].info && clients[clientId].info.pushname) {
-        logger.info(`[DEBUG] Client for ${clientId} is already connected and ready. Skipping re-initialization.`);
-        socket.emit('status', 'Client is already connected!');
-        return;
-    }
-
-    // If a client for this session already exists, destroy it to ensure a clean start
-    if (clients[clientId]) {
-        logger.warn(`[DEBUG] Existing client for session ${clientId} found. Destroying before re-initializing.`);
-        try {
-            await clients[clientId].destroy();
-            logger.info(`[DEBUG] Successfully destroyed old client for ${clientId}.`);
-        } catch (e) {
-            logger.error(`[DEBUG] Error destroying old client for ${clientId}:`, e);
+    // Clean up any existing client or initialization state
+    const cleanupExistingSession = async () => {
+        if (clients[clientId]) {
+            try {
+                logger.warn(`[DEBUG] Cleaning up existing client for ${clientId}`);
+                await clients[clientId].destroy();
+            } catch (e) {
+                logger.error(`[DEBUG] Error cleaning up existing client:`, e);
+            } finally {
+                delete clients[clientId];
+            }
         }
-        delete clients[clientId];
+        delete initializingSessions[clientId];
+        delete latestQRCodes[clientId];
+    };
+
+    // Check if we already have a connected client
+    if (clients[clientId] && clients[clientId].info && clients[clientId].info.pushname) {
+        const client = clients[clientId];
+        try {
+            // Verify the client is actually connected
+            const state = await client.getState();
+            if (state === 'CONNECTED') {
+                logger.info(`[DEBUG] Client for ${clientId} is already connected and ready.`);
+                socket.emit('status', 'Client is already connected!');
+                return;
+            } else {
+                logger.warn(`[DEBUG] Client for ${clientId} exists but state is ${state}. Reinitializing...`);
+                await cleanupExistingSession();
+            }
+        } catch (e) {
+            logger.error(`[DEBUG] Error checking client state:`, e);
+            await cleanupExistingSession();
+        }
     }
 
-    // If another request is already initializing this session, tell the user to wait.
+    // If another request is already initializing this session, check if we have a valid QR code
     if (initializingSessions[clientId]) {
-        logger.info(`[DEBUG] Session for ${clientId} is already initializing. Notifying client to wait.`);
-        // If we have a QR code, send it to the new socket
-        if (latestQRCodes[clientId]) {
-            logger.info(`[DEBUG] Re-sending latest QR code for ${clientId} to new socket connection.`);
-            socket.emit('qr', latestQRCodes[clientId]);
+        logger.info(`[DEBUG] Session for ${clientId} is already initializing.`);
+        
+        // Check if we have a valid QR code (not expired)
+        const qrData = latestQRCodes[clientId];
+        if (qrData && qrData.expiresAt > Date.now()) {
+            logger.info(`[DEBUG] Re-sending valid QR code for ${clientId} to new socket connection.`);
+            socket.emit('qr', qrData.code);
+            socket.emit('status', 'Please scan the QR code to continue...');
         } else {
+            // No valid QR code, clear any expired ones
+            if (qrData) {
+                logger.info(`[DEBUG] Clearing expired QR code for ${clientId}`);
+                delete latestQRCodes[clientId];
+            }
             socket.emit('status', 'Please wait while we prepare your session...');
+            
+            // If we're not retrying and there's no valid QR, force a new one
+            if (!isRetry) {
+                logger.info(`[DEBUG] No valid QR code found, forcing new QR generation for ${clientId}`);
+                try {
+                    if (clients[clientId]) {
+                        await clients[clientId].destroy();
+                        delete clients[clientId];
+                    }
+                    delete initializingSessions[clientId];
+                    return initializeClient(clientId, socket, true);
+                } catch (e) {
+                    logger.error(`[DEBUG] Error during QR refresh for ${clientId}:`, e);
+                }
+            }
         }
         return;
     }
@@ -226,8 +280,41 @@ async function initializeClient(clientId, socket, isRetry = false) {
         initializingSessions[clientId] = true;
         logger.info(`[DEBUG] Initializing new WhatsApp client for session: ${clientId}`);
 
+        // Clean up any existing session data if this is a retry
+        if (isRetry) {
+            logger.info(`[DEBUG] Retry attempt, cleaning up previous session data for ${clientId}`);
+            const sessionDir = path.join(config.paths.session, clientId);
+            try {
+                // Wait a bit before retrying
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                
+                // Retry initialization with a fresh start
+                logger.info(`[DEBUG] Retrying initialization for ${clientId}...`);
+                try {
+                    await client.destroy();
+                } catch (e) {
+                    logger.error(`[DEBUG] Error destroying client during retry:`, e);
+                }
+                
+                // Clear any existing state
+                delete clients[clientId];
+                delete initializingSessions[clientId];
+                delete latestQRCodes[clientId];
+                
+                // Retry initialization
+                return initializeClient(clientId, socket, true);
+            } catch (e) {
+                logger.error(`[DEBUG] Error during retry cleanup for ${clientId}:`, e);
+            }
+        }
+
+        // Configure the WhatsApp client with proper error handling
         const client = new Client({
-            authStrategy: new LocalAuth({ clientId }),
+            authStrategy: new LocalAuth({
+                clientId: clientId,
+                dataPath: config.paths.session,
+                clearAuthDataOnLogout: true
+            }),
             puppeteer: {
                 headless: config.puppeteer.headless,
                 args: [
@@ -237,40 +324,134 @@ async function initializeClient(clientId, socket, isRetry = false) {
                     '--disable-accelerated-2d-canvas',
                     '--no-first-run',
                     '--no-zygote',
-                    '--disable-gpu'
+                    '--disable-gpu',
+                    '--single-process',
+                    '--no-zygote',
+                    '--disable-setuid-sandbox',
+                    '--disable-web-security',
+                    '--disable-features=IsolateOrigins,site-per-process'
                 ],
+                timeout: 60000, // Increase timeout to 60 seconds
+                ignoreHTTPSErrors: true,
+                defaultViewport: { width: 1280, height: 800 }
+            },
+            takeoverOnConflict: true,
+            takeoverTimeoutMs: 10000,
+            qrMaxRetries: 3,
+            restartOnAuthFail: true,
+            ffmpegPath: 'ffmpeg' // Ensure ffmpeg is in PATH
+        });
+
+        // Set up a timeout for the initialization
+        const initTimeout = setTimeout(() => {
+            if (!client.info) {
+                logger.error(`[DEBUG] Initialization timeout for ${clientId}`);
+                socket.emit('status', 'Initialization timed out. Please try again.');
+                client.destroy().catch(e => logger.error('Error destroying client after timeout:', e));
+                delete initializingSessions[clientId];
+                delete latestQRCodes[clientId];
+            }
+        }, 120000); // 2 minutes timeout
+
+        // Handle QR code generation with expiration
+        client.on('qr', (qr) => {
+            logger.info(`[DEBUG] QR code generated for ${clientId}. Sending to client.`);
+            
+            // Store the latest QR with timestamp
+            latestQRCodes[clientId] = {
+                code: qr,
+                generatedAt: Date.now(),
+                expiresAt: Date.now() + (20 * 1000) // 20 seconds expiration (WhatsApp Web default)
+            };
+            
+            // Send the QR code to the client
+            socket.emit('qr', qr);
+            socket.emit('status', 'Please scan the QR code to continue...');
+            
+            // Set a timeout to clear the QR code after expiration
+            setTimeout(() => {
+                if (latestQRCodes[clientId] && latestQRCodes[clientId].code === qr) {
+                    logger.info(`[DEBUG] QR code expired for ${clientId}`);
+                    delete latestQRCodes[clientId];
+                    
+                    // Notify the client that the QR has expired
+                    if (socket.connected) {
+                        socket.emit('qr_expired');
+                        socket.emit('status', 'QR code expired. Please wait for a new one...');
+                    }
+                }
+            }, 20000); // 20 seconds
+        });
+
+        // Handle successful client initialization
+        client.on('ready', () => {
+            logger.info(`[DEBUG] WhatsApp Client for ${clientId} is ready!`);
+            
+            // Store the client instance
+            clients[clientId] = client;
+            
+            // Clean up
+            delete latestQRCodes[clientId];
+            delete initializingSessions[clientId];
+            
+            // Notify the client
+            socket.emit('status', 'Connected to WhatsApp!');
+            
+            // Send a confirmation that we're ready
+            socket.emit('ready');
+        });
+
+        // Handle authentication failures
+        client.on('auth_failure', (msg) => {
+            const errorMsg = `Authentication failed: ${msg || 'Unknown error'}`;
+            logger.error(`[DEBUG] Authentication failure for ${clientId}:`, msg);
+            
+            // Clean up
+            if (clients[clientId]) delete clients[clientId];
+            delete initializingSessions[clientId];
+            delete latestQRCodes[clientId];
+            
+            // Notify the client
+            socket.emit('status', errorMsg);
+            socket.emit('auth_failure', errorMsg);
+            
+            // Clean up session directory to force fresh login
+            const sessionDir = path.join(config.paths.session, clientId);
+            try {
+                if (fs.existsSync(sessionDir)) {
+                    fs.rmSync(sessionDir, { recursive: true, force: true });
+                    logger.info(`[DEBUG] Cleared session directory after auth failure for ${clientId}`);
+                }
+            } catch (err) {
+                logger.error(`[DEBUG] Error clearing session directory:`, err);
             }
         });
 
-        // Debug: Listen for all client events
-        client.on('qr', (qr) => {
-            logger.info(`[DEBUG] QR code generated for ${clientId}. Sending to client.`);
-            latestQRCodes[clientId] = qr; // Store the latest QR
-            socket.emit('qr', qr);
-        });
-
-        client.on('ready', () => {
-            logger.info(`[DEBUG] WhatsApp Client for ${clientId} is ready!`);
-            clients[clientId] = client;
-            delete latestQRCodes[clientId]; // Clear QR on ready
-            socket.emit('status', 'Client is ready!');
-            delete initializingSessions[clientId];
-        });
-
-        client.on('auth_failure', (msg) => {
-            const errorMsg = `Authentication failed. Please try again.`;
-            logger.error(`[DEBUG] Authentication failure for ${clientId}: ${msg}`);
-            socket.emit('status', errorMsg);
-            delete initializingSessions[clientId];
-            delete latestQRCodes[clientId];
-        });
-
+        // Handle disconnection
         client.on('disconnected', (reason) => {
             logger.warn(`[DEBUG] Client for ${clientId} was disconnected: ${reason}`);
-            socket.emit('status', 'Client disconnected. Please refresh and log in again.');
+            
+            // Clean up
             if (clients[clientId]) delete clients[clientId];
-            if (initializingSessions[clientId]) delete initializingSessions[clientId];
+            delete initializingSessions[clientId];
             delete latestQRCodes[clientId];
+            
+            // Notify the client
+            socket.emit('status', 'Disconnected from WhatsApp. Please refresh and log in again.');
+            socket.emit('disconnected', reason);
+            
+            // Clean up session directory if needed
+            if (reason === 'NAVIGATION' || reason === 'CONFLICT') {
+                const sessionDir = path.join(config.paths.session, clientId);
+                try {
+                    if (fs.existsSync(sessionDir)) {
+                        fs.rmSync(sessionDir, { recursive: true, force: true });
+                        logger.info(`[DEBUG] Cleared session directory after ${reason} for ${clientId}`);
+                    }
+                } catch (err) {
+                    logger.error(`[DEBUG] Error clearing session directory:`, err);
+                }
+            }
         });
 
         // Debug: Listen for all other events (for future debugging)
@@ -287,11 +468,54 @@ async function initializeClient(clientId, socket, isRetry = false) {
             logger.info(`[DEBUG] Loading screen for ${clientId}: ${percent}% - ${message}`);
         });
 
-        await client.initialize().catch(async err => {
-            // --- New logic: If Puppeteer/Chromium launch error, clean up session dir and retry once ---
-            if (!isRetry && err && (String(err).includes('Failed to launch the browser process') || String(err).includes('ProcessSingleton'))) {
+        // Handle initialization with proper cleanup
+        try {
+            await client.initialize();
+            
+            // Clear the initialization timeout on success
+            clearTimeout(initTimeout);
+            
+            // Add a ping mechanism to detect dead connections
+            const pingInterval = setInterval(() => {
+                if (!client.info) {
+                    clearInterval(pingInterval);
+                    return;
+                }
+                client.getState().catch(err => {
+                    logger.error(`[DEBUG] Connection check failed for ${clientId}:`, err);
+                    clearInterval(pingInterval);
+                    client.destroy().catch(e => logger.error('Error destroying client after ping failure:', e));
+                    delete clients[clientId];
+                    socket.emit('disconnected', 'Connection lost');
+                });
+            }, 30000); // Check every 30 seconds
+            
+            // Clean up on client destruction
+            client.on('destroy', () => {
+                clearInterval(pingInterval);
+                clearTimeout(initTimeout);
+                delete clients[clientId];
+                delete initializingSessions[clientId];
+                delete latestQRCodes[clientId];
+            });
+            
+        } catch (err) {
+            // Clear the timeout on error
+            clearTimeout(initTimeout);
+            
+            // Handle Puppeteer/Chromium launch errors with cleanup and retry
+            const errorMessage = String(err);
+            const isPuppeteerError = errorMessage.includes('Failed to launch the browser process') || 
+                                   errorMessage.includes('ProcessSingleton') ||
+                                   errorMessage.includes('Navigation timeout');
+            
+            if (!isRetry && isPuppeteerError) {
+                logger.error(`[DEBUG] Puppeteer error for ${clientId}, cleaning up and retrying:`, err);
+                
                 // Kill orphaned Chromium processes before deleting session dir
                 killChromiumProcesses();
+                
+                // Clean up session directory
                 const sessionDir = path.join(config.paths.session, clientId);
                 try {
                     if (fs.existsSync(sessionDir)) {
@@ -310,10 +534,48 @@ async function initializeClient(clientId, socket, isRetry = false) {
             // User-friendly error message
             const userFriendlyMsg = 'Could not start WhatsApp session. Please try again in a few seconds.';
             logger.error(`[DEBUG] Failed to initialize client for ${clientId}:`, err);
-            socket.emit('status', userFriendlyMsg);
+            
+            // Clean up any remaining resources
             delete initializingSessions[clientId];
             delete latestQRCodes[clientId];
-        });
+            
+            // Try to destroy the client if it exists
+            if (client) {
+                try {
+                    await client.destroy();
+                } catch (e) {
+                    logger.error(`[DEBUG] Error destroying client after initialization failure:`, e);
+                } finally {
+                    delete clients[clientId];
+                }
+            }
+            
+            // Notify the client with a user-friendly message
+            let userFriendlyMessage = 'Failed to connect to WhatsApp. Please try again later.';
+            if (errorMessage.includes('timeout') || errorMessage.includes('Navigation timeout')) {
+                userFriendlyMessage = 'Connection timed out. Please check your internet connection and try again.';
+            } else if (errorMessage.includes('Failed to launch browser') || errorMessage.includes('ProcessSingleton')) {
+                userFriendlyMessage = 'Could not start browser. The system may be busy. Please try again in a moment.';
+            }
+            
+            socket.emit('status', userFriendlyMessage);
+            socket.emit('error', { 
+                code: 'INIT_FAILED', 
+                message: errorMessage,
+                retryable: false
+            });
+            
+            // Clean up session directory to force fresh login on next attempt
+            const sessionDir = path.join(config.paths.session, clientId);
+            try {
+                if (fs.existsSync(sessionDir)) {
+                    fs.rmSync(sessionDir, { recursive: true, force: true });
+                    logger.info(`[DEBUG] Cleared session directory after initialization failure for ${clientId}`);
+                }
+            } catch (e) {
+                logger.error(`[DEBUG] Error cleaning up session directory:`, e);
+            }
+        }
     } catch (err) {
         logger.error(`[DEBUG] Failed to initialize client for ${clientId}:`, err);
         socket.emit('status', 'Could not start WhatsApp session. Please try again in a few seconds.');
@@ -322,7 +584,7 @@ async function initializeClient(clientId, socket, isRetry = false) {
     }
 }
 
-// --- Socket.IO Connection ---
+// ... (rest of the code remains the same)
 io.use((socket, next) => {
     // Allow connection for authentication
     if (socket.handshake.auth && socket.handshake.auth.username) {
