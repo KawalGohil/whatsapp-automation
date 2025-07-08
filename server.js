@@ -279,6 +279,7 @@ async function initializeClient(clientId, socket, isRetry = false) {
             clients[clientId] = client;
             delete latestQRCodes[clientId]; // Clear QR on ready
             socket.emit('status', 'Client is ready!');
+            socket.emit('client_ready', true);
             delete initializingSessions[clientId];
         });
 
@@ -303,6 +304,7 @@ async function initializeClient(clientId, socket, isRetry = false) {
         client.on('disconnected', (reason) => {
             logger.warn(`[DEBUG] Client for ${clientId} was disconnected: ${reason}.`);
             socket.emit('status', 'Client disconnected. Attempting to re-initialize...');
+            socket.emit('client_ready', false);
             if (clients[clientId]) delete clients[clientId];
             if (initializingSessions[clientId]) delete initializingSessions[clientId];
             delete latestQRCodes[clientId];
@@ -323,6 +325,10 @@ async function initializeClient(clientId, socket, isRetry = false) {
         });
         client.on('loading_screen', (percent, message) => {
             logger.info(`[DEBUG] Loading screen for ${clientId}: ${percent}% - ${message}`);
+            // Only update status if not 100% or if client is not yet marked as ready
+            if (percent < 100 && !clients[clientId]) {
+                socket.emit('status', `Loading: ${percent}% - ${message}`);
+            }
         });
 
         await client.initialize().catch(async err => {
