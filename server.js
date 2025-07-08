@@ -215,10 +215,11 @@ const latestQRCodes = {}; // Stores the latest QR code for each client
 async function initializeClient(clientId, socket, isRetry = false) {
     logger.info(`[DEBUG] Initialization request for session: ${clientId}${isRetry ? ' (retry)' : ''}`);
 
-    // If a client for this session is already ready, skip re-initialization
+    // If a client for this session is already ready, send ready status and return
     if (clients[clientId] && clients[clientId].info && clients[clientId].info.pushname) {
-        logger.info(`[DEBUG] Client for ${clientId} is already connected and ready. Skipping re-initialization.`);
+        logger.info(`[DEBUG] Client for ${clientId} is already connected and ready. Notifying frontend.`);
         socket.emit('status', 'Client is already connected!');
+        socket.emit('client_ready', true);
         return;
     }
 
@@ -241,9 +242,11 @@ async function initializeClient(clientId, socket, isRetry = false) {
         if (latestQRCodes[clientId]) {
             logger.info(`[DEBUG] Re-sending latest QR code for ${clientId} to new socket connection.`);
             socket.emit('qr', latestQRCodes[clientId]);
+            socket.emit('status', 'Please scan the QR code.');
         } else {
             socket.emit('status', 'Please wait while we prepare your session...');
         }
+        socket.emit('client_ready', false);
         return;
     }
 
