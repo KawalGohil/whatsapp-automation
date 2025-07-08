@@ -211,15 +211,18 @@ const isAuthenticated = (req, res, next) => {
 const clients = {}; // Stores active client instances
 const initializingSessions = {}; // Tracks sessions that are currently starting up
 const latestQRCodes = {}; // Stores the latest QR code for each client
+const userSockets = {}; // Stores the latest socket ID for each user
 
-async function initializeClient(clientId, socket, isRetry = false) {
+async function initializeClient(clientId, io, isRetry = false) {
     logger.info(`[DEBUG] Initialization request for session: ${clientId}${isRetry ? ' (retry)' : ''}`);
 
     // If a client for this session is already ready, send ready status and return
     if (clients[clientId] && clients[clientId].info && clients[clientId].info.pushname) {
         logger.info(`[DEBUG] Client for ${clientId} is already connected and ready. Notifying frontend.`);
-        socket.emit('status', 'Client is already connected!');
-        socket.emit('client_ready', true);
+        if (userSockets[clientId]) {
+            io.to(userSockets[clientId]).emit('status', 'Client is already connected!');
+            io.to(userSockets[clientId]).emit('client_ready', true);
+        }
         return;
     }
 
@@ -239,14 +242,16 @@ async function initializeClient(clientId, socket, isRetry = false) {
     if (initializingSessions[clientId]) {
         logger.info(`[DEBUG] Session for ${clientId} is already initializing. Notifying client to wait.`);
         // If we have a QR code, send it to the new socket
-        if (latestQRCodes[clientId]) {
-            logger.info(`[DEBUG] Re-sending latest QR code for ${clientId} to new socket connection.`);
-            socket.emit('qr', latestQRCodes[clientId]);
-            socket.emit('status', 'Please scan the QR code.');
-        } else {
-            socket.emit('status', 'Please wait while we prepare your session...');
+        if (userSockets[clientId]) {
+            if (latestQRCodes[clientId]) {
+                logger.info(`[DEBUG] Re-sending latest QR code for ${clientId} to new socket connection.`);
+                io.to(userSockets[clientId]).emit('qr', latestQRCodes[clientId]);
+                io.to(userSockets[clientId]).emit('status', 'Please scan the QR code.');
+            } else {
+                io.to(userSockets[clientId]).emit('status', 'Please wait while we prepare your session...');
+            }
+            io.to(userSockets[clientId]).emit('client_ready', false);
         }
-        socket.emit('client_ready', false);
         return;
     }
 
@@ -274,22 +279,30 @@ async function initializeClient(clientId, socket, isRetry = false) {
         client.on('qr', (qr) => {
             logger.info(`[DEBUG] QR code generated for ${clientId}. Sending to client.`);
             latestQRCodes[clientId] = qr; // Store the latest QR
-            socket.emit('qr', qr);
+            if (userSockets[clientId]) {
+                io.to(userSockets[clientId]).emit('qr', qr);
+            } else {
+                logger.warn(`[DEBUG] No active socket found for ${clientId} to send QR code.`);
+            }
         });
 
         client.on('ready', () => {
             logger.info(`[DEBUG] WhatsApp Client for ${clientId} is ready!`);
             clients[clientId] = client;
             delete latestQRCodes[clientId]; // Clear QR on ready
-            socket.emit('status', 'Client is ready!');
-            socket.emit('client_ready', true);
+            if (userSockets[clientId]) {
+                io.to(userSockets[clientId]).emit('status', 'Client is ready!');
+                io.to(userSockets[clientId]).emit('client_ready', true);
+            }
             delete initializingSessions[clientId];
         });
 
         client.on('auth_failure', (msg) => {
             const errorMsg = `Authentication failed. Please try again.`;
             logger.error(`[DEBUG] Authentication failure for ${clientId}: ${msg}. Deleting session data.`);
-            socket.emit('status', errorMsg);
+            if (userSockets[clientId]) {
+                io.to(userSockets[clientId]).emit('status', errorMsg);
+            }
             // On auth_failure, delete the session folder to force a fresh QR scan
             const sessionDir = path.join(config.paths.session, clientId);
             try {
@@ -306,14 +319,16 @@ async function initializeClient(clientId, socket, isRetry = false) {
 
         client.on('disconnected', (reason) => {
             logger.warn(`[DEBUG] Client for ${clientId} was disconnected: ${reason}.`);
-            socket.emit('status', 'Client disconnected. Attempting to re-initialize...');
-            socket.emit('client_ready', false);
+            if (userSockets[clientId]) {
+                io.to(userSockets[clientId]).emit('status', 'Client disconnected. Attempting to re-initialize...');
+                io.to(userSockets[clientId]).emit('client_ready', false);
+            }
             if (clients[clientId]) delete clients[clientId];
             if (initializingSessions[clientId]) delete initializingSessions[clientId];
             delete latestQRCodes[clientId];
             // Attempt to re-initialize the client on disconnect to get a new QR if needed
             // This handles QR refresh if the client disconnects due to QR expiration
-            initializeClient(clientId, socket, true);
+            initializeClient(clientId, io, true);
         });
 
         // Debug: Listen for all other events (for future debugging)
@@ -330,7 +345,9 @@ async function initializeClient(clientId, socket, isRetry = false) {
             logger.info(`[DEBUG] Loading screen for ${clientId}: ${percent}% - ${message}`);
             // Only update status if not 100% or if client is not yet marked as ready
             if (percent < 100 && !clients[clientId]) {
-                socket.emit('status', `Loading: ${percent}% - ${message}`);
+                if (userSockets[clientId]) {
+                    io.to(userSockets[clientId]).emit('status', `Loading: ${percent}% - ${message}`);
+                }
             }
         });
 
@@ -358,13 +375,17 @@ async function initializeClient(clientId, socket, isRetry = false) {
             }
             // User-friendly error message
             const userFriendlyMsg = 'Could not start WhatsApp session. Please try again in a few seconds.';
-            socket.emit('status', userFriendlyMsg);
+            if (userSockets[clientId]) {
+                io.to(userSockets[clientId]).emit('status', userFriendlyMsg);
+            }
             delete initializingSessions[clientId];
             delete latestQRCodes[clientId];
         });
     } catch (err) {
         logger.error(`[DEBUG] Failed to initialize client for ${clientId}:`, err);
-        socket.emit('status', 'Could not start WhatsApp session. Please try again in a few seconds.');
+        if (userSockets[clientId]) {
+            io.to(userSockets[clientId]).emit('status', 'Could not start WhatsApp session. Please try again in a few seconds.');
+        }
         delete initializingSessions[clientId];
         delete latestQRCodes[clientId];
     }
@@ -405,27 +426,43 @@ io.on('connection', (socket) => {
     });
 });
 
-io.on('connection', (socket) => {
     const username = socket.user.username;
+    userSockets[username] = socket.id; // Store the current socket ID for the user
     logger.info(`[DEBUG] User '${username}' connected with socket ID: ${socket.id}`);
 
     // Only initialize if not already initializing or connected
     if (!initializingSessions[username] && (!clients[username] || clients[username].info == null || !clients[username].info.pushname)) {
         logger.info(`[DEBUG] Initializing client for user: ${username}`);
-        initializeClient(username, socket);
+        initializeClient(username, io);
     } else {
         logger.info(`[DEBUG] Client for ${username} is already initializing or connected. Skipping duplicate initialization.`);
+        // If client is already ready, send ready status to the current socket
         if (clients[username] && clients[username].info && clients[username].info.pushname) {
-            socket.emit('status', 'Client is already connected!');
+            io.to(socket.id).emit('status', 'Client is already connected!');
+            io.to(socket.id).emit('client_ready', true);
         } else {
-            socket.emit('status', 'Client is initializing. Please wait...');
+            // If client is initializing, send a generic initializing status
+            io.to(socket.id).emit('status', 'Client is initializing. Please wait...');
+            io.to(socket.id).emit('client_ready', false);
+            // The initializeClient function (if already running) will eventually emit the QR or ready status
         }
     }
 
-    socket.on('disconnect', () => {
+    // Handle disconnection
+    socket.on('disconnect', (reason) => {
+        logger.info(`[SOCKET.IO] User disconnected: ${socket.user?.username || 'Unknown'}. Socket ID: ${socket.id}. Reason: ${reason}`);
         logger.info(`[DEBUG] User with socket ID: ${socket.id} disconnected.`);
+        // If this was the last active socket for the user, clear it
+        if (userSockets[username] === socket.id) {
+            delete userSockets[username];
+        }
     });
-});
+    
+    // Handle errors
+    socket.on('error', (error) => {
+        console.error('Socket error:', error);
+    });
+
 
 // --- Routes ---
 app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res) => {
