@@ -476,10 +476,12 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res)
     }
     let groupName;
     let contacts = [];
+    let desiredAdminNumber = null; // Declare at a higher scope
+
     if (req.is('application/json')) {
         groupName = req.body.groupName;
         const numbers = req.body.numbers;
-        const desiredAdminNumber = req.body.desiredAdminNumber; // New: Get desired admin number
+        desiredAdminNumber = req.body.desiredAdminNumber; // Assign value
 
         if (!groupName || typeof groupName !== 'string' || groupName.trim().length < 3 || /^[-\s]+$/.test(groupName) || /^[0-9]+$/.test(groupName) || /[^a-zA-Z0-9 _-]/.test(groupName)) {
             logger.warn(`[UPLOAD] Invalid group name: '${groupName}' by user: ${sanitizedClientId}`);
@@ -513,7 +515,7 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res)
     } else {
         groupName = req.body.groupName;
         const contactsFile = req.file;
-        const desiredAdminNumber = req.body.desiredAdminNumber; // New: Get desired admin number
+        desiredAdminNumber = req.body.desiredAdminNumber; // Assign value
 
         if (!groupName || typeof groupName !== 'string' || groupName.trim().length < 3 || /^[-\s]+$/.test(groupName) || /^[0-9]+$/.test(groupName) || /[^a-zA-Z0-9 _-]/.test(groupName)) {
             logger.warn(`[UPLOAD] Invalid group name: '${groupName}' by user: ${sanitizedClientId}`);
