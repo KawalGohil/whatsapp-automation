@@ -45,6 +45,8 @@ async function createGroup(client, groupName, participants, desiredAdminJid = nu
                 try {
                     // Ensure the desired admin is part of the group before promoting
                     const groupParticipants = await group.participants;
+                    logger.info(`[DEBUG] Group participants for ${groupName}: ${JSON.stringify(groupParticipants.map(p => p.id._serialized))}`);
+                    logger.info(`[DEBUG] Desired admin JID: ${desiredAdminJid}`);
                     const adminExistsInGroup = groupParticipants.some(p => p.id._serialized === desiredAdminJid);
 
                     if (adminExistsInGroup) {
