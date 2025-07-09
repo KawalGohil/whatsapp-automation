@@ -36,7 +36,7 @@ async function createGroup(client, groupName, participants, desiredAdminJid = nu
     while (attempt < maxRetries) {
         try {
             logger.info(`Attempting to create group "${groupName}" (Attempt ${attempt + 1}/${maxRetries})...`);
-            const group = await client.createGroup(groupName, contacts);
+            const group = await client.createGroup(groupName, participants);
             const fullGroupChat = await client.getChatById(group.gid);
             const groupId = group.gid._serialized;
             logger.info(`Group created successfully! Name: ${groupName}, ID: ${groupId}`);
