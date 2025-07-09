@@ -8,7 +8,7 @@ function getRandomDelay(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-async function createGroup(client, groupName, participants) {
+async function createGroup(client, groupName, participants, desiredAdminJid = null) {
     const state = readState();
 
     // Check if a group with this name has already been created
@@ -39,6 +39,24 @@ async function createGroup(client, groupName, participants) {
             const group = await client.createGroup(groupName, participants);
             const groupId = group.gid._serialized;
             logger.info(`Group created successfully! Name: ${groupName}, ID: ${groupId}`);
+
+            // New: Promote desired admin if provided
+            if (desiredAdminJid) {
+                try {
+                    // Ensure the desired admin is part of the group before promoting
+                    const groupParticipants = await group.participants;
+                    const adminExistsInGroup = groupParticipants.some(p => p.id._serialized === desiredAdminJid);
+
+                    if (adminExistsInGroup) {
+                        await group.promoteParticipants([desiredAdminJid]);
+                        logger.info(`Promoted ${desiredAdminJid} to admin in group ${groupName}.`);
+                    } else {
+                        logger.warn(`Desired admin ${desiredAdminJid} not found in group ${groupName}. Cannot promote.`);
+                    }
+                } catch (adminPromoteErr) {
+                    logger.error(`Failed to promote ${desiredAdminJid} to admin in group ${groupName}:`, adminPromoteErr);
+                }
+            }
 
             // Save the new group's ID to the state file to prevent re-creation
             state.createdGroups[groupName] = groupId;

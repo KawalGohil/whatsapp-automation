@@ -282,7 +282,19 @@ async function initializeClient(clientId, io, isRetry = false) {
             if (userSockets[clientId]) {
                 io.to(userSockets[clientId]).emit('qr', qr);
             } else {
-                logger.warn(`[DEBUG] No active socket found for ${clientId} to send QR code.`);
+                logger.warn(`[DEBUG] No active socket found for ${clientId} to send QR code. Destroying client.`);
+                // If no socket is found, destroy the client to prevent unnecessary QR generation and resource usage
+                (async () => {
+                    try {
+                        await client.destroy();
+                        logger.info(`[DEBUG] Client for ${clientId} destroyed due to no active socket.`);
+                    } catch (e) {
+                        logger.error(`[DEBUG] Error destroying client for ${clientId} (no active socket):`, e);
+                    }
+                })();
+                delete initializingSessions[clientId];
+                delete latestQRCodes[clientId];
+                return; // Exit the QR handler as client is destroyed
             }
         });
 
@@ -467,6 +479,8 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res)
     if (req.is('application/json')) {
         groupName = req.body.groupName;
         const numbers = req.body.numbers;
+        const desiredAdminNumber = req.body.desiredAdminNumber; // New: Get desired admin number
+
         if (!groupName || typeof groupName !== 'string' || groupName.trim().length < 3 || /^[-\s]+$/.test(groupName) || /^[0-9]+$/.test(groupName) || /[^a-zA-Z0-9 _-]/.test(groupName)) {
             logger.warn(`[UPLOAD] Invalid group name: '${groupName}' by user: ${sanitizedClientId}`);
             return res.status(400).send('Group name must be at least 3 characters, can only contain letters, numbers, spaces, dashes, and underscores.');
@@ -479,6 +493,19 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res)
             let num = String(n).replace(/[^0-9]/g, '');
             return num ? `${num}@c.us` : null;
         }).filter(Boolean);
+
+        // New: Validate desiredAdminNumber if provided
+        if (desiredAdminNumber) {
+            let adminNum = String(desiredAdminNumber).replace(/[^0-9]/g, '');
+            if (!adminNum) {
+                logger.warn(`[UPLOAD] Invalid desired admin number: '${desiredAdminNumber}' by user: ${sanitizedClientId}`);
+                return res.status(400).send('Desired admin number is invalid.');
+            }
+            // Ensure the desired admin is part of the participants list
+            if (!contacts.includes(`${adminNum}@c.us`)) {
+                contacts.push(`${adminNum}@c.us`); // Add admin to participants if not already present
+            }
+        }
         if (contacts.length === 0) {
             logger.warn(`[UPLOAD] No valid phone numbers after sanitization by user: ${sanitizedClientId}`);
             return res.status(400).send('No valid phone numbers provided.');
@@ -486,6 +513,8 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res)
     } else {
         groupName = req.body.groupName;
         const contactsFile = req.file;
+        const desiredAdminNumber = req.body.desiredAdminNumber; // New: Get desired admin number
+
         if (!groupName || typeof groupName !== 'string' || groupName.trim().length < 3 || /^[-\s]+$/.test(groupName) || /^[0-9]+$/.test(groupName) || /[^a-zA-Z0-9 _-]/.test(groupName)) {
             logger.warn(`[UPLOAD] Invalid group name: '${groupName}' by user: ${sanitizedClientId}`);
             return res.status(400).send('Group name must be at least 3 characters, can only contain letters, numbers, spaces, dashes, and underscores.');
@@ -493,6 +522,16 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res)
         if (!contactsFile) {
             logger.warn(`[UPLOAD] No contacts file provided by user: ${sanitizedClientId}`);
             return res.status(400).send('Contacts file is required.');
+        }
+
+        // New: Validate desiredAdminNumber if provided
+        if (desiredAdminNumber) {
+            let adminNum = String(desiredAdminNumber).replace(/[^0-9]/g, '');
+            if (!adminNum) {
+                logger.warn(`[UPLOAD] Invalid desired admin number: '${desiredAdminNumber}' by user: ${sanitizedClientId}`);
+                return res.status(400).send('Desired admin number is invalid.');
+            }
+            // Add admin to participants if not already present (will be handled after CSV parsing)
         }
         try {
             contacts = await new Promise((resolve, reject) => {
@@ -532,7 +571,8 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res)
     }
     logger.info(`[UPLOAD] Creating group '${groupName}' for user: ${sanitizedClientId} with ${contacts.length} participants.`);
     try {
-        await createGroup(clients[sanitizedClientId], groupName, contacts);
+        const adminJid = desiredAdminNumber ? `${String(desiredAdminNumber).replace(/[^0-9]/g, '')}@c.us` : null;
+            await createGroup(clients[sanitizedClientId], groupName, contacts, adminJid);
         logger.info(`[UPLOAD] Group creation process started for '${groupName}' by user: ${sanitizedClientId}`);
         res.send('Group creation process started.');
     } catch (error) {
