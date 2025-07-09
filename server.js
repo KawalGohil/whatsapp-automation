@@ -532,6 +532,7 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res)
                 return res.status(400).send('Desired admin number is invalid.');
             }
             // Add admin to participants if not already present (will be handled after CSV parsing)
+            // Ensure the desired admin is part of the participants list after CSV parsing
         }
         try {
             contacts = await new Promise((resolve, reject) => {
@@ -554,6 +555,14 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res)
                         reject(err);
                     });
             });
+
+            // New: Ensure the desired admin is part of the participants list after CSV parsing
+            if (desiredAdminNumber) {
+                let adminNum = String(desiredAdminNumber).replace(/[^0-9]/g, '');
+                if (adminNum && !contacts.includes(`${adminNum}@c.us`)) {
+                    contacts.push(`${adminNum}@c.us`);
+                }
+            }
         } catch (err) {
             logger.error(`[UPLOAD] Failed to process CSV for user: ${sanitizedClientId}`, err);
             return res.status(400).send('Failed to process CSV file.');

@@ -92,6 +92,7 @@
                 <div id="manual-input-section" class="hidden">
                   <textarea id="manualNumbers" placeholder="Enter phone numbers, one per line or comma-separated. Also add (91) before the number." rows="4" style="width: 100%; resize: vertical;"></textarea>
                 </div>
+                <input type="text" id="desiredAdminNumber" placeholder="Enter Desired Admin Number (optional)">
                 <button type="submit">Create Group</button>
             </form>
         </div>
@@ -341,6 +342,8 @@
         groupForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const groupName = groupForm.querySelector('#groupName').value;
+            const desiredAdminNumber = groupForm.querySelector('#desiredAdminNumber').value.trim();
+
             statusDiv.textContent = 'Uploading contacts and creating group...';
             if (manualMode) {
                 // Manual entry mode
@@ -350,15 +353,19 @@
                     return;
                 }
                 // Parse numbers (split by comma or newline)
-                const numbers = numbersRaw.split(/[,\n]/).map(n => n.trim()).filter(n => n);
+                const numbers = numbersRaw.split(/[,]/).map(n => n.trim()).filter(n => n);
                 if (numbers.length === 0) {
                     statusDiv.textContent = 'Please enter at least one valid phone number.';
                     return;
                 }
+                const payload = { groupName, numbers, clientId: currentUsername };
+                if (desiredAdminNumber) {
+                    payload.desiredAdminNumber = desiredAdminNumber;
+                }
                 const response = await fetch('/upload', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ groupName, numbers, clientId: currentUsername })
+                    body: JSON.stringify(payload)
                 });
                 statusDiv.textContent = await response.text();
             } else {
@@ -372,6 +379,9 @@
                 formData.append('groupName', groupName);
                 formData.append('contacts', contactsFile);
                 formData.append('clientId', currentUsername);
+                if (desiredAdminNumber) {
+                    formData.append('desiredAdminNumber', desiredAdminNumber);
+                }
                 const response = await fetch('/upload', { method: 'POST', body: formData });
                 statusDiv.textContent = await response.text();
             }
