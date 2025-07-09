@@ -36,7 +36,8 @@ async function createGroup(client, groupName, participants, desiredAdminJid = nu
     while (attempt < maxRetries) {
         try {
             logger.info(`Attempting to create group "${groupName}" (Attempt ${attempt + 1}/${maxRetries})...`);
-            const group = await client.createGroup(groupName, participants);
+            const group = await client.createGroup(groupName, contacts);
+            const fullGroupChat = await client.getChatById(group.gid);
             const groupId = group.gid._serialized;
             logger.info(`Group created successfully! Name: ${groupName}, ID: ${groupId}`);
 
@@ -49,10 +50,7 @@ async function createGroup(client, groupName, participants, desiredAdminJid = nu
                     const adminExistsInGroup = groupParticipants.includes(desiredAdminJid);
 
                     if (adminExistsInGroup) {
-                        logger.info(`[DEBUG] Type of group: ${typeof group}`);
-                        logger.info(`[DEBUG] Group object keys: ${Object.keys(group)}`);
-                        logger.info(`[DEBUG] Does group have promoteParticipants? ${typeof group.promoteParticipants}`);
-                        await group.promoteParticipants([desiredAdminJid]);
+                        await fullGroupChat.promoteParticipants([desiredAdminJid]);
                         logger.info(`Promoted ${desiredAdminJid} to admin in group ${groupName}.`);
                     } else {
                         logger.warn(`Desired admin ${desiredAdminJid} not found in group ${groupName}. Cannot promote.`);
