@@ -49,6 +49,9 @@ async function createGroup(client, groupName, participants, desiredAdminJid = nu
                     const adminExistsInGroup = groupParticipants.includes(desiredAdminJid);
 
                     if (adminExistsInGroup) {
+                        logger.info(`[DEBUG] Type of group: ${typeof group}`);
+                        logger.info(`[DEBUG] Group object keys: ${Object.keys(group)}`);
+                        logger.info(`[DEBUG] Does group have promoteParticipants? ${typeof group.promoteParticipants}`);
                         await group.promoteParticipants([desiredAdminJid]);
                         logger.info(`Promoted ${desiredAdminJid} to admin in group ${groupName}.`);
                     } else {
