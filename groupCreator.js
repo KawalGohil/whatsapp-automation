@@ -22,8 +22,10 @@ async function createGroup(client, groupName, participants, desiredAdminJid = nu
         return;
     }
 
-    const { min, max } = config.rateLimits.groupCreationDelay;
-    const randomDelay = getRandomDelay(min, max);
+    const delayConfig = config.rateLimits.groupCreationDelay;
+    const randomDelay = typeof delayConfig === 'object' 
+        ? getRandomDelay(delayConfig.min, delayConfig.max) 
+        : delayConfig;
 
     logger.info(`Waiting for ${randomDelay / 1000} seconds before creating group...`);
     await delay(randomDelay);
@@ -37,8 +39,6 @@ async function createGroup(client, groupName, participants, desiredAdminJid = nu
         try {
             logger.info(`Attempting to create group "${groupName}" (Attempt ${attempt + 1}/${maxRetries})...`);
             const group = await client.createGroup(groupName, participants);
-            logger.info(`Group object from createGroup: ${JSON.stringify(group, null, 2)}`);
-            logger.info(`Type of group.gid: ${typeof group.gid}`);
             const fullGroupChat = await client.getChatById(group.gid._serialized);
             const groupId = group.gid._serialized;
             logger.info(`Group created successfully! Name: ${groupName}, ID: ${groupId}`);
