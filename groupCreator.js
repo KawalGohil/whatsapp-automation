@@ -1,6 +1,6 @@
-const config = require('./config');
 const logger = require('./logger');
 const { readState, writeState } = require('./stateManager');
+const config = require('./config'); // Make sure config is imported
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -22,12 +22,10 @@ async function createGroup(client, groupName, participants, desiredAdminJid = nu
         return;
     }
 
-    const delayConfig = config.rateLimits.groupCreationDelay;
-    const randomDelay = typeof delayConfig === 'object' 
-        ? getRandomDelay(delayConfig.min, delayConfig.max) 
-        : delayConfig;
+    // Use a fixed 1-5 second random delay
+    const randomDelay = getRandomDelay(1000, 5000);
 
-    logger.info(`Waiting for ${randomDelay / 1000} seconds before creating group...`);
+    logger.info(`Waiting for ${randomDelay / 1000} seconds before creating group "${groupName}"...`);
     await delay(randomDelay);
 
     logger.info(`Attempting to create group "${groupName}" with ${participants.length} members.`);
@@ -39,6 +37,12 @@ async function createGroup(client, groupName, participants, desiredAdminJid = nu
         try {
             logger.info(`Attempting to create group "${groupName}" (Attempt ${attempt + 1}/${maxRetries})...`);
             const group = await client.createGroup(groupName, participants);
+
+            if (!group.gid) {
+                logger.error(`Group creation did not return a group ID. Response: ${JSON.stringify(group)}`);
+                throw new Error(`Group creation failed for "${groupName}". Response from API: ${JSON.stringify(group)}`);
+            }
+
             const fullGroupChat = await client.getChatById(group.gid._serialized);
             const groupId = group.gid._serialized;
             logger.info(`Group created successfully! Name: ${groupName}, ID: ${groupId}`);

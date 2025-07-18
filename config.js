@@ -31,7 +31,6 @@ const config = {
 
     // Delays and rate-limiting from your original config
     rateLimits: {
-        groupCreationDelay: 4823,
         retries: {
             maxRetries: 3,
             initialBackoff: 2000,

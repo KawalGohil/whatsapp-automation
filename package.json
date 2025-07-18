@@ -14,6 +14,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@railway/cli": "^4.5.5",
     "bcrypt": "^6.0.0",
     "connect-sqlite3": "^0.9.16",
     "csv-parser": "^3.0.0",

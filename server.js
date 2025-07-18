@@ -466,134 +466,155 @@ io.on('connection', (socket) => {
 });
 
 
-// --- Routes ---
-app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res) => {
-    const sanitizedClientId = req.session.user.username; // Use username from session
-    logger.info(`[UPLOAD] Group creation requested by: ${sanitizedClientId}`);
-    if (!sanitizedClientId || !clients[sanitizedClientId]) {
-        logger.warn(`[UPLOAD] Invalid or inactive session for: ${sanitizedClientId}`);
-        return res.status(400).send('Invalid or inactive session. Please login again.');
+// --- New Route for Manual Group Creation ---
+app.post('/create-group', isAuthenticated, async (req, res) => {
+    const sanitizedClientId = req.session.user.username;
+    const { groupName, numbers, desiredAdminNumber } = req.body;
+
+    if (!groupName || !numbers) {
+        return res.status(400).send('Group name and numbers are required.');
     }
-    let groupName;
-    let contacts = [];
-    let desiredAdminNumber = null; // Declare at a higher scope
 
-    if (req.is('application/json')) {
-        groupName = req.body.groupName;
-        const numbers = req.body.numbers;
-        desiredAdminNumber = req.body.desiredAdminNumber; // Assign value
-
-        if (!groupName || typeof groupName !== 'string' || groupName.trim().length < 3 || /^[-\s]+$/.test(groupName) || /^[0-9]+$/.test(groupName) || /[^a-zA-Z0-9 _-]/.test(groupName)) {
-            logger.warn(`[UPLOAD] Invalid group name: '${groupName}' by user: ${sanitizedClientId}`);
-            return res.status(400).send('Group name must be at least 3 characters, can only contain letters, numbers, spaces, dashes, and underscores.');
-        }
-        if (!Array.isArray(numbers) || numbers.length === 0) {
-            logger.warn(`[UPLOAD] No phone numbers provided by user: ${sanitizedClientId}`);
-            return res.status(400).send('At least one phone number is required.');
-        }
-        contacts = numbers.map(n => {
-            let num = String(n).replace(/[^0-9]/g, '');
-            return num ? `${num}@c.us` : null;
-        }).filter(Boolean);
-
-        // New: Validate desiredAdminNumber if provided
-        if (desiredAdminNumber) {
-            let adminNum = String(desiredAdminNumber).replace(/[^0-9]/g, '');
-            if (!adminNum) {
-                logger.warn(`[UPLOAD] Invalid desired admin number: '${desiredAdminNumber}' by user: ${sanitizedClientId}`);
-                return res.status(400).send('Desired admin number is invalid.');
-            }
-            // Ensure the desired admin is part of the participants list
-            if (!contacts.includes(`${adminNum}@c.us`)) {
-                contacts.push(`${adminNum}@c.us`); // Add admin to participants if not already present
-            }
-        }
-        if (contacts.length === 0) {
-            logger.warn(`[UPLOAD] No valid phone numbers after sanitization by user: ${sanitizedClientId}`);
-            return res.status(400).send('No valid phone numbers provided.');
-        }
-    } else {
-        groupName = req.body.groupName;
-        const contactsFile = req.file;
-        desiredAdminNumber = req.body.desiredAdminNumber; // Assign value
-
-        if (!groupName || typeof groupName !== 'string' || groupName.trim().length < 3 || /^[-\s]+$/.test(groupName) || /^[0-9]+$/.test(groupName) || /[^a-zA-Z0-9 _-]/.test(groupName)) {
-            logger.warn(`[UPLOAD] Invalid group name: '${groupName}' by user: ${sanitizedClientId}`);
-            return res.status(400).send('Group name must be at least 3 characters, can only contain letters, numbers, spaces, dashes, and underscores.');
-        }
-        if (!contactsFile) {
-            logger.warn(`[UPLOAD] No contacts file provided by user: ${sanitizedClientId}`);
-            return res.status(400).send('Contacts file is required.');
-        }
-
-        // New: Validate desiredAdminNumber if provided
-        if (desiredAdminNumber) {
-            let adminNum = String(desiredAdminNumber).replace(/[^0-9]/g, '');
-            if (!adminNum) {
-                logger.warn(`[UPLOAD] Invalid desired admin number: '${desiredAdminNumber}' by user: ${sanitizedClientId}`);
-                return res.status(400).send('Desired admin number is invalid.');
-            }
-            // Add admin to participants if not already present (will be handled after CSV parsing)
-            // Ensure the desired admin is part of the participants list after CSV parsing
-        }
-        try {
-            contacts = await new Promise((resolve, reject) => {
-                const result = [];
-                fs.createReadStream(contactsFile.path)
-                    .pipe(csv())
-                    .on('data', (row) => {
-                        if (row.phone) {
-                            let num = String(row.phone).replace(/[^0-9]/g, '');
-                            if (num) result.push(`${num}@c.us`);
-                        }
-                    })
-                    .on('end', () => {
-                        fs.unlinkSync(contactsFile.path);
-                        resolve(result);
-                    })
-                    .on('error', (err) => {
-                        fs.unlinkSync(contactsFile.path);
-                        logger.error(`[UPLOAD] Error processing CSV for user: ${sanitizedClientId}`, err);
-                        reject(err);
-                    });
-            });
-
-            // New: Ensure the desired admin is part of the participants list after CSV parsing
-            if (desiredAdminNumber) {
-                let adminNum = String(desiredAdminNumber).replace(/[^0-9]/g, '');
-                if (adminNum && !contacts.includes(`${adminNum}@c.us`)) {
-                    contacts.push(`${adminNum}@c.us`);
-                }
-            }
-        } catch (err) {
-            logger.error(`[UPLOAD] Failed to process CSV for user: ${sanitizedClientId}`, err);
-            return res.status(400).send('Failed to process CSV file.');
-        }
-        if (contacts.length === 0) {
-            logger.warn(`[UPLOAD] No valid phone numbers found in CSV by user: ${sanitizedClientId}`);
-            return res.status(400).send('No contacts with a valid phone number found in the CSV.');
-        }
+    const client = clients[sanitizedClientId];
+    if (!client) {
+        return res.status(400).send('WhatsApp client not ready.');
     }
-    const creatorJid = `${sanitizedClientId.replace(/[^0-9]/g, '')}@c.us`;
-    contacts = contacts.filter(num => num !== creatorJid);
-    if (contacts.length === 0) {
-        logger.warn(`[UPLOAD] Only creator's number present for group: '${groupName}' by user: ${sanitizedClientId}`);
-        return res.status(400).send('Cannot create a group with only yourself. Please add other participants.');
+
+    // Sanitize numbers
+    const sanitize = (num) => {
+        if (!num) return null;
+        let cleaned = String(num).replace(/[^0-9]/g, '');
+        if (cleaned.length === 10) cleaned = '91' + cleaned;
+        return cleaned.length >= 10 ? `${cleaned}@c.us` : null;
+    };
+
+    const participants = numbers.split(/[,\n]/).map(sanitize).filter(Boolean);
+    if (participants.length === 0) {
+        return res.status(400).send('No valid participant numbers provided.');
     }
-    logger.info(`[UPLOAD] Creating group '${groupName}' for user: ${sanitizedClientId} with ${contacts.length} participants.`);
+
+    const adminJid = sanitize(desiredAdminNumber);
+    const validAdminJid = adminJid && participants.includes(adminJid) ? adminJid : null;
+
     try {
-        const adminJid = desiredAdminNumber ? `${String(desiredAdminNumber).replace(/[^0-9]/g, '')}@c.us` : null;
-            await createGroup(clients[sanitizedClientId], groupName, contacts, adminJid);
-        logger.info(`[UPLOAD] Group creation process started for '${groupName}' by user: ${sanitizedClientId}`);
-        res.send('Group creation process started.');
+        await createGroup(client, groupName, participants, validAdminJid);
+        res.status(200).json({ message: `Group "${groupName}" created successfully.` });
     } catch (error) {
-        const errorMsg = `Failed to create group: ${error.message}`;
-        logger.error(`[UPLOAD] ${errorMsg} for group: '${groupName}' by user: ${sanitizedClientId}`);
-        if (!res.headersSent) {
-            res.status(500).send(errorMsg);
-        }
+        logger.error(`[CREATE-GROUP] Failed to create group "${groupName}":`, error.message);
+        res.status(500).send('Failed to create group.');
     }
 });
+
+
+// --- Routes ---
+app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res) => {
+    const sanitizedClientId = req.session.user.username;
+    logger.info(`[UPLOAD] CSV received from: ${sanitizedClientId}`);
+
+    const contactsFile = req.file;
+    if (!contactsFile) {
+        logger.warn(`[UPLOAD] No file uploaded.`);
+        return res.status(400).send('CSV file is required.');
+    }
+
+    const createdGroups = [];
+    let skippedRows = 0;
+
+    try {
+        const rows = [];
+
+        await new Promise((resolve, reject) => {
+            fs.createReadStream(contactsFile.path)
+                .pipe(csv())
+                .on('data', (row) => rows.push(row))
+                .on('end', resolve)
+                .on('error', reject);
+        });
+
+        fs.unlinkSync(contactsFile.path); // Clean up temp upload
+
+        for (const row of rows) {
+            // Check that required fields are present
+            const bookingID = row['Booking ID']?.trim();
+            const propertyName = row['property name']?.trim();
+            const checkInDate = row['check-in']?.trim();
+            const adminRaw = row['admin number'];
+
+            if (!bookingID || !propertyName || !checkInDate) {
+                logger.warn(`[UPLOAD] Skipping row due to missing group name fields: ${JSON.stringify(row)}`);
+                skippedRows++;
+                continue;
+            }
+
+            // Build group name
+            const groupName = `${bookingID} - ${propertyName} - ${checkInDate}`;
+
+            // === Phone number sanitization helper ===
+            const sanitize = (num) => {
+                if (!num) return null;
+                let cleaned = String(num).replace(/[^0-9]/g, '');
+                if (cleaned.length === 10) cleaned = '91' + cleaned;
+                return cleaned.length >= 10 ? `${cleaned}@c.us` : null;
+            };
+
+            // === Detect all candidate number fields (excluding admin number) ===
+            const participantFields = Object.keys(row).filter(
+                key =>
+                    row[key] &&
+                    /number|contact|guest|^s$/i.test(key) &&
+                    key.toLowerCase() !== 'admin number'
+            );
+
+            const participants = participantFields
+                .map(field => sanitize(row[field]))
+                .filter(Boolean); // Remove nulls and invalids
+
+            if (participants.length === 0) {
+                logger.warn(`[UPLOAD] Skipping group "${groupName}" - no valid participants found.`);
+                skippedRows++;
+                continue;
+            }
+
+            const adminJid = sanitize(adminRaw);
+
+            // Don't promote admin if not found or not part of participants
+            const validAdminJid = adminJid && participants.includes(adminJid)
+                ? adminJid
+                : null;
+
+            if (adminJid && !validAdminJid) {
+                logger.warn(`[UPLOAD] Admin "${adminRaw}" for group "${groupName}" was not found in participants or was invalid. Skipping promotion.`);
+            }
+
+            if (!clients[sanitizedClientId]) {
+                logger.error(`[UPLOAD] No active WhatsApp client for user: ${sanitizedClientId}`);
+                skippedRows++;
+                continue;
+            }
+
+            try {
+                await createGroup(clients[sanitizedClientId], groupName, participants, validAdminJid);
+                createdGroups.push(groupName);
+                logger.info(`[UPLOAD] Group created: "${groupName}"`);
+            } catch (error) {
+                logger.error(`[UPLOAD] Failed to create group "${groupName}":`, error.message);
+                skippedRows++;
+            }
+        }
+
+        res.status(200).json({
+            message: `Group creation complete`,
+            groupsCreated: createdGroups.length,
+            groupsSkipped: skippedRows
+        });
+
+    } catch (err) {
+        logger.error(`[UPLOAD] Unexpected error:`, err);
+        res.status(500).send('Server error while processing file.');
+    }
+});
+
+
 
 // --- Error handling middleware for structured error responses ---
 app.use((err, req, res, next) => {
