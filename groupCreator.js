@@ -1,6 +1,8 @@
 const logger = require('./logger');
 const { readState, writeState } = require('./stateManager');
 const config = require('./config'); // Make sure config is imported
+const { writeInviteLog } = require('./utils/inviteLogger');
+
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -8,7 +10,7 @@ function getRandomDelay(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-async function createGroup(client, groupName, participants, desiredAdminJid = null) {
+async function createGroup(client, username, groupName, participants, desiredAdminJid = null) {
     const state = readState();
 
     // Check if a group with this name has already been created
@@ -66,6 +68,19 @@ async function createGroup(client, groupName, participants, desiredAdminJid = nu
                 }
             }
 
+            try {
+                const inviteCode = await fullGroupChat.getInviteCode();
+                const inviteLink = `https://chat.whatsapp.com/${inviteCode}`;
+                try {
+                    await writeInviteLog(username, groupName, inviteLink);
+                    logger.info(`Logged invite link for "${groupName}": ${inviteLink}`);
+                } catch (err) {
+                    logger.error(`Failed to log invite for "${groupName}":`, err.message);
+                }
+
+            } catch (linkErr) {
+                logger.warn(`Could not get invite link for group ${groupName}:`, linkErr.message);
+            }
             // Save the new group's ID to the state file to prevent re-creation
             state.createdGroups[groupName] = groupId;
             writeState(state);

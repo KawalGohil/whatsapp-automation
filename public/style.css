@@ -1,0 +1,112 @@
+:root {
+  --primary: #1877f2;
+  --secondary: #166fe5;
+  --error: #d93025;
+  --success: #28a745;
+  --font-main: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+body {
+  font-family: var(--font-main);
+  background: #f0f2f5;
+  margin: 0;
+  padding: 40px;
+  color: #1c1e21;
+}
+
+.container {
+  max-width: 700px;
+  margin: auto;
+  background: #fff;
+  border-radius: 8px;
+  padding: 30px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.hidden { display: none !important; }
+
+h1, h2 {
+  color: var(--primary);
+  text-align: center;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+input, textarea {
+  padding: 10px;
+  font-size: 16px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+
+button {
+  padding: 12px;
+  background: var(--primary);
+  border: none;
+  color: white;
+  font-weight: bold;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--secondary);
+}
+
+#logout-button {
+  background: var(--error);
+  float: right;
+  margin-bottom: 10px;
+}
+
+.auth-status, .log-msg {
+  margin-top: 8px;
+  font-weight: 500;
+  color: #333;
+}
+
+.auth-status.error, .log-msg.error {
+  color: var(--error);
+}
+
+.auth-toggle {
+  color: var(--primary);
+  text-align: center;
+  cursor: pointer;
+}
+
+#qrcode {
+  display: flex;
+  justify-content: center;
+  margin: 20px 0;
+}
+
+#status {
+  font-weight: bold;
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+#status.info {
+    color: #333;  /* Default text color for informational messages */
+}
+
+#status.success {
+    color: var(--success); /* Use the success color variable */
+    font-weight: bold;
+}
+
+#status.error {
+    color: var(--error); /* Use the error color variable */
+    font-weight: bold;
+}
+#input-mode-selector {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  margin-bottom: 10px;
+}

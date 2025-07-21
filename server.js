@@ -8,14 +8,24 @@ const fs = require('fs');
 const path = require('path');
 const logger = require('./logger');
 const config = require('./config');
+const dayjs = require('dayjs');  // Add this line
 const { createGroup } = require('./groupCreator');
 const session = require('express-session');
 const SQLiteStore = require('connect-sqlite3')(session);
 const { addUser, findUser } = require('./database');
 const { execSync } = require('child_process');
-
+const { killOrphanedChrome } = require('./utils/processCleaner');
+const { v4: uuidv4 } = require('uuid'); // Import UUID
+const { deleteSessionFolder } = require('./utils/sessionUtils');
 const app = express();
 const server = http.createServer(app);
+// --- Multi-Client Management ---
+const clients = {}; // Stores active client instances
+const initializingSessions = {}; // Tracks sessions that are currently starting up
+const latestQRCodes = {}; // Stores the latest QR code for each client
+const userSockets = {}; // Stores the latest socket ID for each user
+const destroyingSessions = {};
+
 
 // Configure Socket.IO with CORS and other options
 const io = new Server(server, {
@@ -136,6 +146,42 @@ function killChromiumProcesses() {
     }
 }
 
+async function logoutUser(clientId) {
+    destroyingSessions[clientId] = true;
+
+    while (initializingSessions[clientId]) {
+        logger.warn(`[SAFEGUARD] Waiting for ${clientId}'s init to finish before destroying.`);
+        await new Promise((res) => setTimeout(res, 100));
+    }
+
+    try {
+        if (clients[clientId]) {
+            logger.info(`[LOGOUT] Destroying client for ${clientId}`);
+            await clients[clientId].destroy();
+            delete clients[clientId];
+        }
+
+        // killOrphanedChrome(); // This is too aggressive and closes all chrome instances
+        await new Promise((r) => setTimeout(r, 500));
+
+        const sessionPath = path.join(config.paths.session, clientId);
+        await deleteSessionFolder(sessionPath);
+
+        if (userSockets[clientId]) {
+            io.to(userSockets[clientId]).emit('status', 'Logged out. Please scan again.');
+            io.to(userSockets[clientId]).emit('client_ready', false);
+        }
+
+    } catch (err) {
+        logger.error(`[LOGOUT] Error during logout for ${clientId}:`, err.message);
+    } finally {
+        delete destroyingSessions[clientId];
+        delete initializingSessions[clientId];
+        delete latestQRCodes[clientId];
+    }
+}
+
+
 app.post('/logout', async (req, res) => {
     const username = req.session.user?.username;
     logger.info(`[LOGOUT] Attempt for user: ${username || 'Unknown'}`);
@@ -145,8 +191,8 @@ app.post('/logout', async (req, res) => {
         if (clients[username]) {
             logger.info(`[LOGOUT] Found active WhatsApp client for user: ${username}. Attempting to destroy.`);
             try {
-                await clients[username].destroy();
-                delete clients[username];
+                await logoutUser(username);
+                // The client is already deleted within logoutUser
                 logger.info(`[LOGOUT] Successfully destroyed WhatsApp client for user: ${username}.`);
             } catch (error) {
                 logger.error(`[LOGOUT] Error destroying WhatsApp client for ${username}:`, error);
@@ -161,28 +207,17 @@ app.post('/logout', async (req, res) => {
         }
 
         // --- Kill orphaned Chromium processes before deleting session folder ---
-        killChromiumProcesses();
-
-        // --- Do NOT delete WhatsApp session folder for this user to allow persistent login ---
-        // const sessionDir = path.join(config.paths.session, username);
-        // try {
-        //     if (fs.existsSync(sessionDir)) {
-        //         fs.rmSync(sessionDir, { recursive: true, force: true });
-        //         logger.info(`Deleted WhatsApp session folder for user: ${username}`);
-        //     }
-        // } catch (err) {
-        //     logger.error(`Error deleting session folder for ${username}:`, err);
-        // }
+        // killChromiumProcesses(); // This is too aggressive
     }
     
     // Clear the session
     req.session.destroy((err) => {
         if (err) {
             logger.error('[LOGOUT] Error destroying session:', err);
-            return res.status(500).json({ error: 'Could not log out.' });
+            return res.status(500).json({ error: 'Logout failed.' });
         }
         res.clearCookie('connect.sid');
-        logger.info(`[LOGOUT] Session destroyed and cookie cleared for user: ${username || 'Unknown'}.`);
+        logger.info(`[LOGOUT] Session destroyed and cookie cleared for user: ${username}`);
         res.status(200).json({ message: 'Logged out successfully.' });
     });
 });
@@ -207,11 +242,6 @@ const isAuthenticated = (req, res, next) => {
     res.status(401).send('You must be logged in to access this resource.');
 };
 
-// --- Multi-Client Management ---
-const clients = {}; // Stores active client instances
-const initializingSessions = {}; // Tracks sessions that are currently starting up
-const latestQRCodes = {}; // Stores the latest QR code for each client
-const userSockets = {}; // Stores the latest socket ID for each user
 
 async function initializeClient(clientId, io, isRetry = false) {
     logger.info(`[DEBUG] Initialization request for session: ${clientId}${isRetry ? ' (retry)' : ''}`);
@@ -236,6 +266,11 @@ async function initializeClient(clientId, io, isRetry = false) {
             logger.error(`[DEBUG] Error destroying old client for ${clientId}:`, e);
         }
         delete clients[clientId];
+    }
+
+    if (destroyingSessions[clientId]) {
+        logger.warn(`[SAFEGUARD] Skipping init for ${clientId}; destroy in progress.`);
+        return;
     }
 
     // If another request is already initializing this session, tell the user to wait.
@@ -309,39 +344,42 @@ async function initializeClient(clientId, io, isRetry = false) {
             delete initializingSessions[clientId];
         });
 
-        client.on('auth_failure', (msg) => {
-            const errorMsg = `Authentication failed. Please try again.`;
-            logger.error(`[DEBUG] Authentication failure for ${clientId}: ${msg}. Deleting session data.`);
-            if (userSockets[clientId]) {
-                io.to(userSockets[clientId]).emit('status', errorMsg);
-            }
-            // On auth_failure, delete the session folder to force a fresh QR scan
-            const sessionDir = path.join(config.paths.session, clientId);
-            try {
-                if (fs.existsSync(sessionDir)) {
-                    fs.rmSync(sessionDir, { recursive: true, force: true });
-                    logger.info(`[DEBUG] Deleted WhatsApp session folder for ${clientId} due to authentication failure.`);
-                }
-            } catch (cleanupErr) {
-                logger.error(`[DEBUG] Error cleaning up session directory for ${clientId} after auth_failure:`, cleanupErr);
-            }
+        client.on('auth_failure', async (message) => {
+            logger.warn(`[DEBUG] Auth failure for ${clientId}: ${message}`);
+            const sessionPath = path.join(config.paths.session, clientId);
+            // Kill currently running Chrome instances
+            killOrphanedChrome();
+            // Wait before deletion
+            await new Promise((res) => setTimeout(res, 500));
+            // Clean up session safely
+            await deleteSessionFolder(sessionPath);        
             delete initializingSessions[clientId];
             delete latestQRCodes[clientId];
         });
 
-        client.on('disconnected', (reason) => {
-            logger.warn(`[DEBUG] Client for ${clientId} was disconnected: ${reason}.`);
-            if (userSockets[clientId]) {
-                io.to(userSockets[clientId]).emit('status', 'Client disconnected. Attempting to re-initialize...');
-                io.to(userSockets[clientId]).emit('client_ready', false);
-            }
-            if (clients[clientId]) delete clients[clientId];
-            if (initializingSessions[clientId]) delete initializingSessions[clientId];
-            delete latestQRCodes[clientId];
-            // Attempt to re-initialize the client on disconnect to get a new QR if needed
-            // This handles QR refresh if the client disconnects due to QR expiration
-            initializeClient(clientId, io, true);
-        });
+        client.on('disconnected', async (reason) => {
+    logger.warn(`[CLIENT] Disconnected for ${clientId}: ${reason}`);
+
+    const sessionPath = path.join(config.paths.session, clientId);
+
+    killOrphanedChrome(); // Prevent locked files
+    await new Promise(r => setTimeout(r, 800));
+
+    await deleteSessionFolder(sessionPath); // Safe removal
+
+    if (userSockets[clientId]) {
+        io.to(userSockets[clientId]).emit('status', 'Disconnected. Please scan again.');
+        io.to(userSockets[clientId]).emit('client_ready', false);
+    }
+
+    delete clients[clientId];
+    delete initializingSessions[clientId];
+    delete latestQRCodes[clientId];
+
+    // ✳️ Now safe to retry initialization
+    await new Promise(r => setTimeout(r, 500)); // (optional buffer)
+    initializeClient(clientId, io, true);
+});
 
         // Debug: Listen for all other events (for future debugging)
         client.on('change_state', (state) => {
@@ -429,7 +467,7 @@ io.on('connection', (socket) => {
 
     const username = socket.user.username;
     userSockets[username] = socket.id; // Store the current socket ID for the user
-    logger.info(`[DEBUG] User '${username}' connected with socket ID: ${socket.id}`);
+    logger.info(`[SOCKET.IO] User '${username}' connected with socket ID: ${socket.id}`);
 
     // Only initialize if not already initializing or connected
     if (!initializingSessions[username] && (!clients[username] || clients[username].info == null || !clients[username].info.pushname)) {
@@ -497,7 +535,7 @@ app.post('/create-group', isAuthenticated, async (req, res) => {
     const validAdminJid = adminJid && participants.includes(adminJid) ? adminJid : null;
 
     try {
-        await createGroup(client, groupName, participants, validAdminJid);
+        await createGroup(client, sanitizedClientId, groupName, participants, validAdminJid);
         res.status(200).json({ message: `Group "${groupName}" created successfully.` });
     } catch (error) {
         logger.error(`[CREATE-GROUP] Failed to create group "${groupName}":`, error.message);
@@ -507,114 +545,174 @@ app.post('/create-group', isAuthenticated, async (req, res) => {
 
 
 // --- Routes ---
-app.post('/upload', isAuthenticated, upload.single('contacts'), async (req, res) => {
+app.post('/upload', isAuthenticated, upload.single('contacts'), (req, res) => {
     const sanitizedClientId = req.session.user.username;
     logger.info(`[UPLOAD] CSV received from: ${sanitizedClientId}`);
 
     const contactsFile = req.file;
     if (!contactsFile) {
         logger.warn(`[UPLOAD] No file uploaded.`);
-        return res.status(400).send('CSV file is required.');
+        return res.status(400).json({ error: 'CSV file is required.' });
     }
 
-    const createdGroups = [];
-    let skippedRows = 0;
+    // Respond immediately for fire-and-forget (else move below)
+    res.status(202).json({ message: 'File uploaded. Processing will continue in the background.' });
 
-    try {
-        const rows = [];
+    const sessionId = uuidv4(); // Generate session ID
 
-        await new Promise((resolve, reject) => {
-            fs.createReadStream(contactsFile.path)
-                .pipe(csv())
-                .on('data', (row) => rows.push(row))
-                .on('end', resolve)
-                .on('error', reject);
-        });
+    // Process in background
+    setImmediate(async () => {
+        let createdGroups = [];
+        let failedGroups = [];
 
-        fs.unlinkSync(contactsFile.path); // Clean up temp upload
+        try {
+            const rows = [];
+            await new Promise((resolve, reject) => {
+                fs.createReadStream(contactsFile.path)
+                    .pipe(csv())
+                    .on('data', (row) => rows.push(row))
+                    .on('end', resolve)
+                    .on('error', reject);
+            });
 
-        for (const row of rows) {
-            // Check that required fields are present
-            const bookingID = row['Booking ID']?.trim();
-            const propertyName = row['property name']?.trim();
-            const checkInDate = row['check-in']?.trim();
-            const adminRaw = row['admin number'];
+            fs.unlinkSync(contactsFile.path);
+            const logDir = path.join(config.paths.data, 'invite-logs');
 
-            if (!bookingID || !propertyName || !checkInDate) {
-                logger.warn(`[UPLOAD] Skipping row due to missing group name fields: ${JSON.stringify(row)}`);
-                skippedRows++;
-                continue;
+            for (const row of rows) {
+                let groupName, participants, validAdminJid;
+                try {
+                    // ==> Validate and extract row data as in your code, e.g.:
+                    const bookingID = row['Booking ID']?.trim();
+                    const propertyName = row['property name']?.trim();
+                    const checkInDate = row['check-in']?.trim();
+                    const adminRaw = row['admin number'];
+                    if (!bookingID || !propertyName || !checkInDate) {
+                        throw new Error('Missing one or more mandatory group name fields (Booking ID, property name, check-in).');
+                    }
+                    groupName = `${bookingID} - ${propertyName} - ${checkInDate}`;
+
+                    // Extract participants
+                    const sanitize = (num) => {
+                        if (!num) return null;
+                        let cleaned = String(num).replace(/[^0-9]/g, '');
+                        if (cleaned.length === 10) cleaned = '91' + cleaned;
+                        return cleaned.length >= 10 ? `${cleaned}@c.us` : null;
+                    };
+                    const participantFields = Object.keys(row).filter(
+                        key =>
+                            row[key] &&
+                            /number|contact|guest|^s$/i.test(key) &&
+                            key.toLowerCase() !== 'admin number'
+                    );
+                    participants = participantFields
+                        .map(field => sanitize(row[field]))
+                        .filter(Boolean);
+                    if (participants.length === 0) {
+                        throw new Error('No valid participant numbers found.');
+                    }
+                    // Admin logic
+                    const adminJid = sanitize(adminRaw);
+                    validAdminJid = (adminJid && participants.includes(adminJid)) ? adminJid : null;
+                    // You can warn if admin present but not valid for this group
+                } catch (extractionErr) {
+                    failedGroups.push({
+                        groupName: groupName || '[Unknown]',
+                        error: `Input error: ${extractionErr.message}`,
+                    });
+                    continue;
+                }
+
+                const client = clients[sanitizedClientId];
+                if (!client) {
+                    failedGroups.push({ groupName, error: 'Client not connected.' });
+                    continue;
+                }
+
+                // === Try group creation ===
+                try {
+                    await createGroup(client, sanitizedClientId, groupName, participants, validAdminJid);
+                    logger.info(`[UPLOAD] Group processed: ${groupName}`);
+                    createdGroups.push({ groupName });
+                } catch (creationErr) {
+                    logger.error(`[UPLOAD] Group creation failed: ${groupName} —`, creationErr.message);
+                    failedGroups.push({
+                        groupName,
+                        error: `Group creation failed: ${creationErr.message}`,
+                    });
+                }
             }
+        
+            fs.writeFileSync(path.join(logDir, `group_error_log_${sanitizedClientId}_${sessionId}_${dayjs()
+                .format('YYYY-MM-DD_HH-mm')}.json`), 
+            JSON.stringify(failedGroups, null, 2));
 
-            // Build group name
-            const groupName = `${bookingID} - ${propertyName} - ${checkInDate}`;
+        } catch (outerErr) {
+            // Major CSV or unexpected error (e.g., file not readable)
+            logger.error(`[UPLOAD] Background processing crashed for user ${sanitizedClientId}:`, outerErr);
+            // Optionally: log or notify admin
+        }
+    });
+});
 
-            // === Phone number sanitization helper ===
-            const sanitize = (num) => {
-                if (!num) return null;
-                let cleaned = String(num).replace(/[^0-9]/g, '');
-                if (cleaned.length === 10) cleaned = '91' + cleaned;
-                return cleaned.length >= 10 ? `${cleaned}@c.us` : null;
-            };
+// New route to list available log files for the user
+app.get('/list-logs', isAuthenticated, (req, res) => {
+    const logDir = path.join(config.paths.data, 'invite-logs');
+    const username = req.session.user.username;
 
-            // === Detect all candidate number fields (excluding admin number) ===
-            const participantFields = Object.keys(row).filter(
-                key =>
-                    row[key] &&
-                    /number|contact|guest|^s$/i.test(key) &&
-                    key.toLowerCase() !== 'admin number'
-            );
-
-            const participants = participantFields
-                .map(field => sanitize(row[field]))
-                .filter(Boolean); // Remove nulls and invalids
-
-            if (participants.length === 0) {
-                logger.warn(`[UPLOAD] Skipping group "${groupName}" - no valid participants found.`);
-                skippedRows++;
-                continue;
-            }
-
-            const adminJid = sanitize(adminRaw);
-
-            // Don't promote admin if not found or not part of participants
-            const validAdminJid = adminJid && participants.includes(adminJid)
-                ? adminJid
-                : null;
-
-            if (adminJid && !validAdminJid) {
-                logger.warn(`[UPLOAD] Admin "${adminRaw}" for group "${groupName}" was not found in participants or was invalid. Skipping promotion.`);
-            }
-
-            if (!clients[sanitizedClientId]) {
-                logger.error(`[UPLOAD] No active WhatsApp client for user: ${sanitizedClientId}`);
-                skippedRows++;
-                continue;
-            }
-
-            try {
-                await createGroup(clients[sanitizedClientId], groupName, participants, validAdminJid);
-                createdGroups.push(groupName);
-                logger.info(`[UPLOAD] Group created: "${groupName}"`);
-            } catch (error) {
-                logger.error(`[UPLOAD] Failed to create group "${groupName}":`, error.message);
-                skippedRows++;
-            }
+    fs.readdir(logDir, (err, files) => {
+        if (err) {
+            logger.error(`[LIST-LOGS] Error reading log directory for ${username}:`, err);
+            return res.status(500).json({ error: 'Could not list log files.' });
         }
 
-        res.status(200).json({
-            message: `Group creation complete`,
-            groupsCreated: createdGroups.length,
-            groupsSkipped: skippedRows
-        });
+        // Filter files for the specific user and format them
+        const userLogs = files
+            .filter(file => file.startsWith(`group_invite_log_${username}`))
+            .map(file => {
+                // Extract session ID and timestamp from filename
+                // e.g., group_invite_log_kawal_a4e9c1f2-b8e1-4b3a-8e3c-1d7f7e8e3c1d_2024-01-01_12-00.csv
+                const parts = file.replace(`group_invite_log_${username}_`, '').replace('.csv', '').split('_');
+                const sessionId = parts.slice(0, -2).join('_'); // In case session ID has underscores
+                const timestamp = parts.slice(-2).join('_');
 
-    } catch (err) {
-        logger.error(`[UPLOAD] Unexpected error:`, err);
-        res.status(500).send('Server error while processing file.');
-    }
+                return {
+                    filename: file,
+                    sessionId: sessionId,
+                    // Format for display
+                    display: `Session from ${timestamp.replace('_', ' at ')}`
+                };
+            });
+
+        res.status(200).json(userLogs);
+    });
 });
 
 
+// Route to download the invite log CSV for the current session
+app.get('/download/invite-log/:filename', isAuthenticated, (req, res) => {
+    const logDir = path.join(config.paths.data, 'invite-logs');
+    const filename = req.params.filename;
+    const username = req.session.user.username;
+
+    // Security check: Ensure the user is only downloading their own logs
+    if (!filename.startsWith(`group_invite_log_${username}`)) {
+        logger.warn(`[DOWNLOAD-LOG] Unauthorized attempt by ${username} to download ${filename}`);
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const logPath = path.join(logDir, filename);
+
+    try {
+        if (fs.existsSync(logPath)) {
+            res.download(logPath, filename);
+        } else {
+            return res.status(404).json({ error: 'Log file not found.' });
+        }
+    } catch (err) {
+        logger.error(`[DOWNLOAD-LOG] Error reading log file ${filename}:`, err);
+        return res.status(500).json({ error: 'Error accessing log file.' });
+    }
+});
 
 // --- Error handling middleware for structured error responses ---
 app.use((err, req, res, next) => {
