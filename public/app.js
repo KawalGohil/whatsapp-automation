@@ -19,6 +19,22 @@ window.addEventListener('DOMContentLoaded', () => {
     socket.on('disconnect', (reason) => {
         console.log('Disconnected:', reason);
     });
+
+    socket.on('log_updated', () => {    
+    console.log('[CLIENT] New logs available.');
+    showInviteLogMsg('New invite log is available!', true);
+    fetchAndRenderLogs();
+    });
+
+    socket.on('upload_complete', (summary) => {
+    const msg = `Upload complete. ${summary.success} succeeded, ${summary.failed.length} failed.`;
+    showToast(msg, summary.failed.length === 0 ? 'success' : 'error');
+    
+    if (summary.failed.length > 0) {
+        console.warn('[CLIENT] Group creation failed for:', summary.failed);
+        }
+    });
+
     
     socket.on('connect_error', (error) => {
         console.error('Connection error:', error);
@@ -54,7 +70,38 @@ window.addEventListener('DOMContentLoaded', () => {
         statusDiv.className = `status ${type}`;  // Use CSS classes for styling
     }
 
+    // Replace `populateLogFiles()` with this:
+async function fetchAndRenderLogs() {
+    const dropdown = document.getElementById('log-file-select'); // or 'logFileSelect'
 
+
+    if (!dropdown) {
+        console.warn('[fetchAndRenderLogs] Dropdown not found in DOM.');
+        return;
+    }
+
+    try {
+        const resp = await fetch('/list-logs');
+        const logs = await resp.json();
+
+        dropdown.innerHTML = '';
+
+        if (!logs.length) {
+            dropdown.innerHTML = '<option value="" disabled selected>No logs available</option>';
+            return;
+        }
+logs.forEach((log) => {
+    const opt = document.createElement('option');
+    opt.value = log.filename;      // for download
+    opt.textContent = log.display; // for display in dropdown
+    dropdown.appendChild(opt);
+});
+
+
+    } catch (err) {
+        console.error('[CLIENT] Failed to fetch log list:', err);
+    }
+}
 
     // --- UI Logic ---  (moved up)
     
@@ -114,7 +161,7 @@ window.addEventListener('DOMContentLoaded', () => {
             setupSocketListeners();
 
             // Fetch and populate log files
-            populateLogFiles();
+            fetchAndRenderLogs();
         }
 
         function showLogin() {
@@ -132,37 +179,6 @@ window.addEventListener('DOMContentLoaded', () => {
             // Reset app state as well to prevent flash of old content
             qrcodeDiv.innerHTML = '';
             statusDiv.textContent = 'Connecting to WhatsApp...';
-        }
-
-        // --- New Function to Populate Log Files ---
-        async function populateLogFiles() {
-            try {
-                const response = await fetch('/list-logs');
-                if (!response.ok) {
-                    throw new Error('Could not fetch log list.');
-                }
-                const logs = await response.json();
-
-                // Clear existing options
-                logFileSelect.innerHTML = '<option value="" disabled selected>Select a session log to download</option>';
-
-                if (logs.length === 0) {
-                    logFileSelect.innerHTML += '<option value="" disabled>No logs available</option>';
-                    downloadLogButton.disabled = true;
-                } else {
-                    logs.forEach(log => {
-                        const option = document.createElement('option');
-                        option.value = log.filename;
-                        option.textContent = log.display;
-                        logFileSelect.appendChild(option);
-                    });
-                    downloadLogButton.disabled = false;
-                }
-            } catch (error) {
-                console.error('Error populating log files:', error);
-                inviteLogMessage.textContent = 'Could not load session logs.';
-                inviteLogMessage.className = 'log-status error';
-            }
         }
 
         // --- Group Form Event Listener ---
@@ -272,10 +288,12 @@ window.addEventListener('DOMContentLoaded', () => {
                     } else {
                         throw new Error('Failed to establish WebSocket connection');
                     }
+                    fetchAndRenderLogs();
                 } else {
                     loginStatus.textContent = data.error || 'Login failed.';
                     loginStatus.className = 'auth-status error'; // Consistent error class
                 }
+
             } catch (error) {
                 console.error('Login error:', error);
                 loginStatus.textContent = 'Error connecting to server: ' + error.message;; // Consistent error display
@@ -302,6 +320,7 @@ window.addEventListener('DOMContentLoaded', () => {
                 if (response.ok) {
                     // Only show the app after registration is confirmed
                     showApp(username);
+                    fetchAndRenderLogs();
                 } else {
                     registerStatus.textContent = data.error || data.message || 'Registration failed.';
                     registerStatus.className = 'auth-status error';

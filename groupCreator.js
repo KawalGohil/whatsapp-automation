@@ -2,15 +2,34 @@ const logger = require('./logger');
 const { readState, writeState } = require('./stateManager');
 const config = require('./config'); // Make sure config is imported
 const { writeInviteLog } = require('./utils/inviteLogger');
+// Debounce map to track last emit per user
+const logUpdateDebounceMap = {};
 
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+function emitLogUpdated(username) {
+    const now = Date.now();
+    const lastEmit = logUpdateDebounceMap[username] || 0;
+    const debounceDuration = 12000; // 12 seconds
+
+    if (now - lastEmit > debounceDuration) {
+        if (global.io && global.userSockets?.[username]) {
+            global.io.to(global.userSockets[username]).emit('log_updated');
+            logUpdateDebounceMap[username] = now;
+            console.log(`[EMIT] log_updated emitted to ${username}`);
+        }
+    } else {
+        console.log(`[EMIT] Skipped log_updated for ${username} (debounced)`);
+    }
+}
+
 
 function getRandomDelay(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-async function createGroup(client, username, groupName, participants, desiredAdminJid = null) {
+async function createGroup(client, username, groupName, participants, desiredAdminJid = null, sessionId) {
     const state = readState();
 
     // Check if a group with this name has already been created
@@ -25,7 +44,7 @@ async function createGroup(client, username, groupName, participants, desiredAdm
     }
 
     // Use a fixed 1-5 second random delay
-    const randomDelay = getRandomDelay(1000, 5000);
+    const randomDelay = getRandomDelay(180000, 240000);
 
     logger.info(`Waiting for ${randomDelay / 1000} seconds before creating group "${groupName}"...`);
     await delay(randomDelay);
@@ -73,11 +92,12 @@ async function createGroup(client, username, groupName, participants, desiredAdm
                 const inviteLink = `https://chat.whatsapp.com/${inviteCode}`;
                 try {
                     await writeInviteLog(username, groupName, inviteLink);
+                    // ✅ Notify frontend user that logs have changed
+                    emitLogUpdated(username);
                     logger.info(`Logged invite link for "${groupName}": ${inviteLink}`);
                 } catch (err) {
                     logger.error(`Failed to log invite for "${groupName}":`, err.message);
                 }
-
             } catch (linkErr) {
                 logger.warn(`Could not get invite link for group ${groupName}:`, linkErr.message);
             }

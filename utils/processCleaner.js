@@ -1,5 +1,6 @@
-const os = require('os');
 const { execSync } = require('child_process');
+const os = require('os');
+const logger = require('../logger');
 
 function killOrphanedChrome() {
     try {

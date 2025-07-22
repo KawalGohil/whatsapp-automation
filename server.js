@@ -23,7 +23,6 @@ const server = http.createServer(app);
 const clients = {}; // Stores active client instances
 const initializingSessions = {}; // Tracks sessions that are currently starting up
 const latestQRCodes = {}; // Stores the latest QR code for each client
-const userSockets = {}; // Stores the latest socket ID for each user
 const destroyingSessions = {};
 
 
@@ -37,6 +36,9 @@ const io = new Server(server, {
     // Enable WebSocket transport
     transports: ['websocket', 'polling']
 });
+
+global.io = io; // ✅ make available globally
+global.userSockets = {}; // reuse your existing object that stores socket IDs per user
 
 // --- Middleware ---
 app.use(express.static(path.join(__dirname, 'public')));
@@ -358,11 +360,17 @@ async function initializeClient(clientId, io, isRetry = false) {
         });
 
         client.on('disconnected', async (reason) => {
-    logger.warn(`[CLIENT] Disconnected for ${clientId}: ${reason}`);
+            logger.warn(`[CLIENT] Disconnected for ${clientId}: ${reason}`);
 
-    const sessionPath = path.join(config.paths.session, clientId);
+            // If a logout is already in progress, let it handle the cleanup.
+            if (destroyingSessions[clientId]) {
+                logger.info(`[CLIENT] Disconnect event for ${clientId} ignored, logout in progress.`);
+                return;
+            }
 
-    killOrphanedChrome(); // Prevent locked files
+            const sessionPath = path.join(config.paths.session, clientId);
+
+            killOrphanedChrome(); // Prevent locked files
     await new Promise(r => setTimeout(r, 800));
 
     await deleteSessionFolder(sessionPath); // Safe removal
@@ -466,42 +474,35 @@ io.on('connection', (socket) => {
     logger.info(`[SOCKET.IO] User connected: ${socket.user?.username || 'Unknown'}. Socket ID: ${socket.id}`);
 
     const username = socket.user.username;
-    userSockets[username] = socket.id; // Store the current socket ID for the user
+    global.userSockets[username] = socket.id; // ✅ Store globally
     logger.info(`[SOCKET.IO] User '${username}' connected with socket ID: ${socket.id}`);
 
-    // Only initialize if not already initializing or connected
-    if (!initializingSessions[username] && (!clients[username] || clients[username].info == null || !clients[username].info.pushname)) {
+    if (!initializingSessions[username] && (!clients[username] || !clients[username].info?.pushname)) {
         logger.info(`[DEBUG] Initializing client for user: ${username}`);
         initializeClient(username, io);
     } else {
-        logger.info(`[DEBUG] Client for ${username} is already initializing or connected. Skipping duplicate initialization.`);
-        // If client is already ready, send ready status to the current socket
-        if (clients[username] && clients[username].info && clients[username].info.pushname) {
+        logger.info(`[DEBUG] Client for ${username} is already initializing or connected. Skipping duplicate init.`);
+        if (clients[username]?.info?.pushname) {
             io.to(socket.id).emit('status', 'Client is already connected!');
             io.to(socket.id).emit('client_ready', true);
         } else {
-            // If client is initializing, send a generic initializing status
             io.to(socket.id).emit('status', 'Client is initializing. Please wait...');
             io.to(socket.id).emit('client_ready', false);
-            // The initializeClient function (if already running) will eventually emit the QR or ready status
         }
     }
 
-    // Handle disconnection
     socket.on('disconnect', (reason) => {
-        logger.info(`[SOCKET.IO] User disconnected: ${socket.user?.username || 'Unknown'}. Socket ID: ${socket.id}. Reason: ${reason}`);
-        logger.info(`[DEBUG] User with socket ID: ${socket.id} disconnected.`);
-        // If this was the last active socket for the user, clear it
-        if (userSockets[username] === socket.id) {
-            delete userSockets[username];
+        logger.info(`[SOCKET.IO] User disconnected: ${username}. Socket ID: ${socket.id}. Reason: ${reason}`);
+        if (global.userSockets[username] === socket.id) {
+            delete global.userSockets[username];
         }
     });
 
-    // Handle errors
     socket.on('error', (error) => {
         console.error('Socket error:', error);
     });
 });
+
 
 
 // --- New Route for Manual Group Creation ---
@@ -533,9 +534,10 @@ app.post('/create-group', isAuthenticated, async (req, res) => {
 
     const adminJid = sanitize(desiredAdminNumber);
     const validAdminJid = adminJid && participants.includes(adminJid) ? adminJid : null;
+    const sessionId = uuidv4(); // Generate a session ID for manual creation
 
     try {
-        await createGroup(client, sanitizedClientId, groupName, participants, validAdminJid);
+        await createGroup(client, sanitizedClientId, groupName, participants, validAdminJid, sessionId);
         res.status(200).json({ message: `Group "${groupName}" created successfully.` });
     } catch (error) {
         logger.error(`[CREATE-GROUP] Failed to create group "${groupName}":`, error.message);
@@ -630,7 +632,7 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), (req, res) => {
 
                 // === Try group creation ===
                 try {
-                    await createGroup(client, sanitizedClientId, groupName, participants, validAdminJid);
+                    await createGroup(client, sanitizedClientId, groupName, participants, validAdminJid, sessionId);
                     logger.info(`[UPLOAD] Group processed: ${groupName}`);
                     createdGroups.push({ groupName });
                 } catch (creationErr) {
@@ -641,7 +643,13 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), (req, res) => {
                     });
                 }
             }
-        
+            if (global.io && global.userSockets?.[sanitizedClientId]) {
+    global.io.to(global.userSockets[sanitizedClientId]).emit('upload_complete', {
+        success: createdGroups.length,
+        failed: failedGroups,
+    });
+    }
+
             fs.writeFileSync(path.join(logDir, `group_error_log_${sanitizedClientId}_${sessionId}_${dayjs()
                 .format('YYYY-MM-DD_HH-mm')}.json`), 
             JSON.stringify(failedGroups, null, 2));
@@ -665,27 +673,23 @@ app.get('/list-logs', isAuthenticated, (req, res) => {
             return res.status(500).json({ error: 'Could not list log files.' });
         }
 
-        // Filter files for the specific user and format them
         const userLogs = files
-            .filter(file => file.startsWith(`group_invite_log_${username}`))
+            .filter(file => file.startsWith(`group_invite_log_${username}_`) && file.endsWith('.csv'))
             .map(file => {
-                // Extract session ID and timestamp from filename
-                // e.g., group_invite_log_kawal_a4e9c1f2-b8e1-4b3a-8e3c-1d7f7e8e3c1d_2024-01-01_12-00.csv
-                const parts = file.replace(`group_invite_log_${username}_`, '').replace('.csv', '').split('_');
-                const sessionId = parts.slice(0, -2).join('_'); // In case session ID has underscores
-                const timestamp = parts.slice(-2).join('_');
-
+                const dateStr = file
+                    .replace(`group_invite_log_${username}_`, '')
+                    .replace('.csv', '');
                 return {
                     filename: file,
-                    sessionId: sessionId,
-                    // Format for display
-                    display: `Session from ${timestamp.replace('_', ' at ')}`
+                    display: `Invite log — ${dateStr}`
                 };
             });
 
         res.status(200).json(userLogs);
     });
 });
+
+
 
 
 // Route to download the invite log CSV for the current session

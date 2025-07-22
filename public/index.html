@@ -99,15 +99,16 @@
 
                 <button type="submit">Create Group</button>
             </form>
-            <hr>
-            <h2>Download Session Logs</h2>
-            <div id="download-section" style="margin-top: 15px;">
-                <select id="log-file-select" style="width: 100%; padding: 8px; margin-bottom: 10px;">
-                    <option value="" disabled selected>Loading session logs...</option>
-                </select>
-                <button id="download-invite-log-btn" style="width: 100%;">Download Selected Log</button>
-                <div id="invite-log-message" style="margin-top: 10px; text-align: center; font-weight: bold;"></div>
-            </div>
+            <!-- ✅ Log dropdown shown only after login -->
+<h2 style="margin-top: 24px;">Download Invite Log</h2>
+<div id="download-section" style="margin-top: 10px;">
+    <select id="log-file-select" style="width: 100%; padding: 8px;">
+        <option value="" selected disabled>Loading session logs...</option>
+    </select>
+    <button id="download-invite-log-btn" style="margin-top: 8px; width: 100%;">Download Selected Log</button>
+    <div id="invite-log-message" style="margin-top: 10px; text-align: center;"></div>
+</div>
+
         </div>
     </div>
 

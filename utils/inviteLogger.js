@@ -1,4 +1,3 @@
-// utils/inviteLogger.js
 const fs = require('fs');
 const path = require('path');
 const dayjs = require('dayjs');
@@ -12,9 +11,10 @@ function ensureDir(dir) {
 
 async function writeInviteLog(username, groupName, inviteLink) {
     const logDir = path.join(config.paths.data, 'invite-logs');
-    const filename = `group_invite_log_${username}_${dayjs().format('YYYY-MM-DD')}.csv`;
-
     ensureDir(logDir);
+
+    const day = dayjs().format('YYYY-MM-DD');
+    const filename = `group_invite_log_${username}_${day}.csv`;
     const filePath = path.join(logDir, filename);
 
     const isFirstWrite = !fs.existsSync(filePath);
