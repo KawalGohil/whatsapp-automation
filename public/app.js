@@ -26,9 +26,51 @@ window.addEventListener('DOMContentLoaded', () => {
     fetchAndRenderLogs();
     });
 
-    socket.on('upload_complete', (summary) => {
-    const msg = `Upload complete. ${summary.success} succeeded, ${summary.failed.length} failed.`;
-    showToast(msg, summary.failed.length === 0 ? 'success' : 'error');
+    socket.on('upload_progress', ({ current, total, currentGroup, message }) => {
+    const bar = document.getElementById('upload-progress-bar');
+    const text = document.getElementById('upload-status-text');
+    const section = document.getElementById('upload-status-section');
+
+    if (bar && text && section) {
+        section.style.display = 'block';
+        bar.max = total;
+        bar.value = current;
+        text.textContent = `Processing: ${current}/${total} — Group: "${currentGroup}"`;
+    }
+    
+    // Display per-group status message if provided
+    if (message) {
+        showInviteLogMsg(message, !message.toLowerCase().includes('failed'));
+    }
+});
+
+socket.on('upload_complete', ({ successCount, failedCount, failedGroups }) => {
+    const bar = document.getElementById('upload-progress-bar');
+    const text = document.getElementById('upload-status-text');
+    
+    const finalMessage = `Upload complete. ${successCount} succeeded, ${failedCount} failed.`;
+    text.textContent = finalMessage;
+    bar.value = bar.max; // Fill the bar
+
+    showInviteLogMsg(finalMessage, failedCount === 0);
+
+    if (failedCount > 0) {
+        console.warn('[CLIENT] Group creation failed for:', failedGroups);
+    }
+
+    // Hide progress bar after a delay
+    setTimeout(() => {
+        document.getElementById('upload-status-section').style.display = 'none';
+    }, 5000);
+});
+
+socket.on('upload_aborted', ({ message, failedGroups }) => {
+    const statusEl = document.getElementById('upload-status-text');
+    statusEl.innerHTML = `${message}<br>Groups not created: ${failedGroups.map(g => g.groupName).join(', ')}`;
+
+    showInviteLogMsg(message, false);
+
+
     
     if (summary.failed.length > 0) {
         console.warn('[CLIENT] Group creation failed for:', summary.failed);
@@ -250,50 +292,15 @@ logs.forEach((log) => {
                     body: JSON.stringify({ username, password })
                 });
 
+                //
                 const data = await response.json().catch(() => ({}));
                 if (response.ok) {
-                    // Poll /check-auth until it returns success (max 5 tries)
-                    let authenticated = false;
-                    for (let i = 0; i < 5; i++) {
-                        const check = await fetch('/check-auth', { credentials: 'include' });
-                        if (check.ok) {
-                            authenticated = true;
-                            break;
-                        }
-                        await new Promise(resolve => setTimeout(resolve, 300));
-                    }
-                    if (!authenticated) throw new Error('Session not established after login');
-
-                    // Wait a bit more to ensure cookie propagation
-                    await new Promise(resolve => setTimeout(resolve, 500));
-
-                    socket.auth = { username };
-                    socket.connect();
-
-                    // Wait for connection or retry once if it fails
-                    let connected = false;
-                    for (let i = 0; i < 2; i++) {
-                        await new Promise(resolve => setTimeout(resolve, 400));
-                        if (socket.connected) {
-                            connected = true;
-                            break;
-                        }
-                        if (!connected && i === 0) {
-                            // Retry once
-                            socket.connect();
-                        }
-                    }
-                    if (connected) {
-                        showApp(username);
-                    } else {
-                        throw new Error('Failed to establish WebSocket connection');
-                    }
-                    fetchAndRenderLogs();
+                    // The showApp function will handle the socket connection.
+                    showApp(username);
                 } else {
                     loginStatus.textContent = data.error || 'Login failed.';
                     loginStatus.className = 'auth-status error'; // Consistent error class
                 }
-
             } catch (error) {
                 console.error('Login error:', error);
                 loginStatus.textContent = 'Error connecting to server: ' + error.message;; // Consistent error display

@@ -366,11 +366,14 @@ async function initializeClient(clientId, io, isRetry = false) {
             if (destroyingSessions[clientId]) {
                 logger.info(`[CLIENT] Disconnect event for ${clientId} ignored, logout in progress.`);
                 return;
-            }
+           }
 
             const sessionPath = path.join(config.paths.session, clientId);
 
-            killOrphanedChrome(); // Prevent locked files
+            // Removing aggressive cleanup from automatic disconnect event.
+            // A user-initiated logout is a better place for this.
+            // killOrphanedChrome(); 
+    
     await new Promise(r => setTimeout(r, 800));
 
     await deleteSessionFolder(sessionPath); // Safe removal
@@ -625,30 +628,64 @@ app.post('/upload', isAuthenticated, upload.single('contacts'), (req, res) => {
                 }
 
                 const client = clients[sanitizedClientId];
-                if (!client) {
-                    failedGroups.push({ groupName, error: 'Client not connected.' });
-                    continue;
+                
+                if (global.io && global.userSockets?.[sanitizedClientId]) {
+                    global.io.to(global.userSockets[sanitizedClientId]).emit('upload_aborted', {
+                        failedGroups,
+                        message: 'Disconnected during upload. Some groups were not created.',
+                    });
                 }
 
-                // === Try group creation ===
+            if (!client || client.destroyed || !client.info || !client.pupBrowser) {
+    failedGroups.push({
+        groupName: row['...'],
+        error: 'Client not ready or session already closed.',
+    });
+
+    if (global.io && global.userSockets?.[sanitizedClientId]) {
+        global.io.to(global.userSockets[sanitizedClientId]).emit('upload_aborted', {
+            failedGroups,
+            message: `Disconnected or invalid session. Group ${groupName} not created.`,
+        });
+    }
+
+    break; // or continue, based on logic
+}
+
+                let message;
                 try {
                     await createGroup(client, sanitizedClientId, groupName, participants, validAdminJid, sessionId);
-                    logger.info(`[UPLOAD] Group processed: ${groupName}`);
+                    logger.info(`[UPLOAD] Successfully processed group: ${groupName}`);
                     createdGroups.push({ groupName });
+                    message = `Successfully created group "${groupName}"`;
                 } catch (creationErr) {
-                    logger.error(`[UPLOAD] Group creation failed: ${groupName} —`, creationErr.message);
+                    logger.error(`[UPLOAD] Group creation failed for ${groupName}:`, creationErr.message);
                     failedGroups.push({
                         groupName,
                         error: `Group creation failed: ${creationErr.message}`,
                     });
+                    message = `Failed to create group "${groupName}"`;
+                }
+
+                // Emit progress after each attempt
+                if (global.io && global.userSockets?.[sanitizedClientId]) {
+                    global.io.to(global.userSockets[sanitizedClientId]).emit('upload_progress', {
+                        current: createdGroups.length + failedGroups.length,
+                        total: rows.length,
+                        currentGroup: groupName,
+                        message: message,
+                    });
                 }
             }
+            
+            // Emit final completion event once the entire loop is done
             if (global.io && global.userSockets?.[sanitizedClientId]) {
-    global.io.to(global.userSockets[sanitizedClientId]).emit('upload_complete', {
-        success: createdGroups.length,
-        failed: failedGroups,
-    });
-    }
+                global.io.to(global.userSockets[sanitizedClientId]).emit('upload_complete', {
+                    successCount: createdGroups.length,
+                    failedCount: failedGroups.length,
+                    failedGroups: failedGroups
+                });
+            }
 
             fs.writeFileSync(path.join(logDir, `group_error_log_${sanitizedClientId}_${sessionId}_${dayjs()
                 .format('YYYY-MM-DD_HH-mm')}.json`), 

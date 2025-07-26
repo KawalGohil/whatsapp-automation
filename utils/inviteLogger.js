@@ -9,22 +9,21 @@ function ensureDir(dir) {
     }
 }
 
-async function writeInviteLog(username, groupName, inviteLink) {
+function writeInviteLog(username, groupName, inviteLink = '', status = 'Success', reason = '') {
     const logDir = path.join(config.paths.data, 'invite-logs');
     ensureDir(logDir);
 
-    const day = dayjs().format('YYYY-MM-DD');
-    const filename = `group_invite_log_${username}_${day}.csv`;
+    const filename = `group_invite_log_${username}_${dayjs().format('YYYY-MM-DD')}.csv`;
     const filePath = path.join(logDir, filename);
 
     const isFirstWrite = !fs.existsSync(filePath);
-    const csvLine = `"${groupName}","${inviteLink}"\n`;
-
     if (isFirstWrite) {
-        fs.writeFileSync(filePath, `"Group Name","Invite Link"\n`, 'utf8');
+        fs.writeFileSync(filePath, `"Group Name","Invite Link","Status","Reason"\n`, 'utf8');
     }
 
-    fs.appendFileSync(filePath, csvLine, 'utf8');
+    const line = `"${groupName}","${inviteLink}","${status}","${reason.replace(/(\r\n|\n|\r)/gm, ' ').replace(/"/g, "'")}"\n`;
+    fs.appendFileSync(filePath, line, 'utf8');
 }
+
 
 module.exports = { writeInviteLog };

@@ -30,11 +30,12 @@ const config = {
     },
 
     // Delays and rate-limiting from your original config
+    // Update config for more conservative approach
     rateLimits: {
         retries: {
-            maxRetries: 3,
-            initialBackoff: 2000,
-        },
+            maxRetries: 3,           // Reduce retries to avoid hitting limits
+            initialBackoff: 10000,   // Increase to 10 seconds
+        }
     },
 };
 
